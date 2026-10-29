@@ -29,6 +29,7 @@ describe('Route du Rhum sur la vraie météo', () => {
     const race = new Race(RHUM, DEFAULT_SETUP);
     expect(race.realWind).toBe(true);
     expect(race.boats.length).toBe(IMOCA_RHUM_2026.length + 1);
+    race.player.isPlayer = false; // le joueur n’a plus de route calculée : ici il navigue comme un concurrent
     race.step(24 * 30, (e) => {
       if (e.type === 'boat' && e.boat.isPlayer && e.ev === 'avarie') startRepair(e.boat);
       if (e.type === 'boat' && e.boat.isPlayer && e.ev === 'repaired') e.boat.auto = true;

@@ -51,6 +51,7 @@ describe('courses complètes', () => {
     it(`${def.name} : tous les bateaux arrivent`, { timeout: 60000 }, () => {
       const race = new Race(def, DEFAULT_SETUP);
       race.player.auto = true;
+      race.player.isPlayer = false; // le joueur n’a plus de route calculée : ici il navigue comme un concurrent
       let landHits = 0;
       race.step(24 * 30, (e) => {
         if (e.type === 'boat' && e.ev === 'land') landHits++;

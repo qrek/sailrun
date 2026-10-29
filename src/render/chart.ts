@@ -230,13 +230,10 @@ export class ChartView {
     // relief 3D seulement à la demande (bouton Relief 3D) : c'est la partie la plus lourde de la carte
     m.addImage('boat', boatIcon(), { sdf: true });
     const src = (id: string) => m.addSource(id, { type: 'geojson', data: EMPTY });
-    for (const id of ['tracks', 'route', 'plan', 'planpts', 'plansel', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
+    for (const id of ['tracks', 'route', 'cplegs', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
     m.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#ffd84d', 'line-width': 1.6, 'line-opacity': 0.75, 'line-dasharray': [2, 2] } });
-    m.addLayer({ id: 'plan-c', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0c2c48', 'line-width': 6, 'line-opacity': 0.35 } });
-    m.addLayer({ id: 'plan', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffd84d', 'line-width': 3 } });
-    m.addLayer({ id: 'planpts', type: 'circle', source: 'planpts', paint: { 'circle-radius': ['case', ['get', 'order'], 6, 3], 'circle-color': ['case', ['get', 'order'], '#ffd84d', '#fff6c8'], 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
-    m.addLayer({ id: 'plansel', type: 'circle', source: 'plansel', paint: { 'circle-radius': 14, 'circle-color': 'rgba(255,216,77,0.18)', 'circle-stroke-color': '#ffd84d', 'circle-stroke-width': 2.5 } });
-    m.addLayer({ id: 'planlbl', type: 'symbol', source: 'planpts', filter: ['!=', ['get', 'label'], ''], layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': ['case', ['get', 'order'], 12, 10], 'text-offset': [0, -1.3], 'text-optional': true, 'symbol-sort-key': ['case', ['get', 'order'], 0, 1] }, paint: { 'text-color': ['case', ['get', 'order'], '#ffd84d', '#fff6c8'], 'text-halo-color': '#0c2c48', 'text-halo-width': 2 } });
+    m.addLayer({ id: 'cplegs-c', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0c2c48', 'line-width': 5, 'line-opacity': 0.35 } });
+    m.addLayer({ id: 'cplegs', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffd84d', 'line-width': 2.5, 'line-dasharray': [2.5, 1.5] } });
     m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 3, 1.6], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.7] } });
     m.addLayer({ id: 'proj', type: 'line', source: 'proj', paint: { 'line-color': '#ffffff', 'line-width': 1.6, 'line-dasharray': [1, 1.5], 'line-opacity': 0.9 } });
     m.addLayer({ id: 'projpts', type: 'circle', source: 'projpts', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff', 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
@@ -319,17 +316,52 @@ export class ChartView {
     if (withTracks) this.set('tracks', { type: 'FeatureCollection', features: tracks });
   }
 
-  /** Routage : la route calculée, un point par pas de temps, étiquettes aux changements de cap. */
-  setPlan(pts: { pos: LonLat; order: boolean; label: string }[]) {
-    if (!pts.length) this.set('plansel', EMPTY);
-    const line = pts.filter((p) => !p.order).map((p) => p.pos);
-    this.set('plan', line.length > 1 ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line } } : EMPTY);
-    this.set('planpts', { type: 'FeatureCollection', features: pts.map((p) => ({ type: 'Feature', properties: { order: p.order, label: p.label }, geometry: { type: 'Point', coordinates: p.pos } })) });
+  /* ---------- checkpoints du joueur ---------- */
+  private cpMarkers: maplibregl.Marker[] = [];
+  onCpMove: ((i: number, ll: LonLat) => void) | null = null;
+  onCpTap: ((i: number) => void) | null = null;
+
+  /** Checkpoints : repères numérotés à faire glisser, et le trajet du bateau jusqu'au dernier. */
+  setCheckpoints(from: LonLat | null, cps: { pos: LonLat; eta: string; sel: boolean }[]) {
+    this.whenReady(() => {
+      while (this.cpMarkers.length > cps.length) this.cpMarkers.pop()!.remove();
+      cps.forEach((c, i) => {
+        let mk = this.cpMarkers[i];
+        if (!mk) {
+          const el = document.createElement('div');
+          el.className = 'cp';
+          el.innerHTML = '<b><i></i></b><span></span>';
+          mk = new maplibregl.Marker({ element: el, draggable: true, anchor: 'center' });
+          const idx = i;
+          mk.on('dragend', () => {
+            const ll = mk.getLngLat();
+            this.onCpMove?.(idx, [ll.lng, ll.lat]);
+          });
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.onCpTap?.(idx);
+          });
+          mk.setLngLat(c.pos).addTo(this.map);
+          this.cpMarkers[i] = mk;
+        }
+        mk.setLngLat(c.pos);
+        const el = mk.getElement();
+        el.querySelector('b i')!.textContent = String(i + 1);
+        el.querySelector('span')!.textContent = c.eta;
+        el.classList.toggle('sel', c.sel);
+        el.classList.toggle('next', i === 0);
+      });
+      const line = from && cps.length ? [from, ...cps.map((c) => c.pos)] : [];
+      this.set('cplegs', line.length > 1 ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line } } : EMPTY);
+    });
   }
 
-  /** Met en avant une étape du routage : la carte s'y centre, un cercle la signale. */
-  focusPlan(pos: LonLat) {
-    this.set('plansel', { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: pos } });
+  /** Mode pose : le pointeur devient une mire, un clic sur la mer pose un checkpoint. */
+  setPlacing(on: boolean) {
+    this.el.classList.toggle('placing', on);
+  }
+
+  focus(pos: LonLat) {
     this.whenReady(() => this.map.easeTo({ center: pos, zoom: Math.max(this.map.getZoom(), 6.5), duration: 700 }));
   }
 

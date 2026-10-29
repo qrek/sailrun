@@ -1,4 +1,4 @@
-import { LonLat, Rng, dist, isLand, move, norm180, smooth } from './geo';
+import { LonLat, Rng, bearing, dist, isLand, move, norm180, smooth } from './geo';
 import { WindSource, windFrom } from './wind';
 
 /** Multiplicateurs de performance issus du garage et du skipper. */
@@ -141,24 +141,25 @@ export interface Boat {
   fleetId?: string;
   /** positionné par le suivi en direct : la simulation ne le déplace pas */
   live?: boolean;
-  /** programme du routage : à partir de l'heure t (h de course), cap hdg — suivi en mode Auto */
-  program?: Order[];
-  /** fin du programme (h de course) : au-delà, le pilote auto reprend la route conseillée */
-  programEnd?: number;
+  /** checkpoints posés par le joueur : le pilote file vers le premier, puis le suivant */
+  checkpoints?: LonLat[];
 }
 
-export interface Order {
-  t: number;
-  hdg: number;
-}
+/** Rayon (milles) dans lequel un checkpoint est considéré comme atteint. */
+export const CP_RADIUS = 3;
+/** Angle au vent le plus serré que tient le pilote quand le checkpoint est face au vent. */
+export const CP_CLOSE = 42;
 
-/** Ordre du programme en vigueur à l'heure t, ou null (pas de programme, ou programme terminé). */
-export function activeOrder(b: Pick<Boat, 'program' | 'programEnd'>, t: number): Order | null {
-  const pr = b.program;
-  if (!pr?.length || b.programEnd === undefined || t >= b.programEnd) return null;
-  let cur: Order | null = null;
-  for (const o of pr) if (o.t <= t + 1e-6) cur = o;
-  return cur ?? pr[0];
+/**
+ * Cap vers un checkpoint : droit dessus. S'il est face au vent, on serre le vent au plus près
+ * sur le bord où se trouve le point (le bateau change de bord tout seul quand le point passe de l'autre côté).
+ */
+export function checkpointHeading(pos: LonLat, cp: LonLat, twd: number): number {
+  const brg = bearing(pos, cp);
+  const twa = norm180(twd - brg);
+  if (Math.abs(twa) >= CP_CLOSE) return brg;
+  const side = twa >= 0 ? 1 : -1;
+  return (twd - side * CP_CLOSE + 720) % 360;
 }
 
 /** Complète un bateau venu d'une ancienne sauvegarde. */
@@ -167,7 +168,7 @@ export function migrateBoat(b: Partial<Boat>): Boat {
   return Object.assign(defaults, b) as Boat;
 }
 
-export type BoatEvent = 'tack' | 'gybe' | 'land' | 'finish' | 'avarie' | 'repaired' | 'woke' | 'sail' | 'mark';
+export type BoatEvent = 'tack' | 'gybe' | 'land' | 'finish' | 'avarie' | 'repaired' | 'woke' | 'sail' | 'mark' | 'checkpoint';
 
 /* Polaire de base d'un 60 pieds, en fraction de la force du vent */
 const PA = [0, 30, 38, 45, 52, 60, 75, 90, 110, 130, 150, 165, 180];

@@ -38,53 +38,24 @@ export interface HudHandlers {
   units(u: DistUnit): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
-  /** routage : calcule la route sur `hours` heures */
-  route(hours: number): void;
-  /** le pilote Auto suit (ou non) le programme */
-  routeFollow(on: boolean): void;
-  /** décale un ordre de `min` minutes */
-  routeShift(i: number, min: number): void;
-  routeDelete(i: number): void;
-  /** ajoute un ordre : heure locale « hh:mm », cap vrai */
-  routeAdd(hhmm: string, hdg: number): void;
-  routeClear(): void;
-  /** montre une étape du routage sur la carte */
-  routeFocus(i: number): void;
+  /** mode pose de checkpoints (un clic sur la carte = un point) */
+  cpPlace(on: boolean): void;
+  cpDelete(i: number): void;
+  cpClear(): void;
+  cpFocus(i: number): void;
 }
 
-/** Une ligne du programme de routage, prête à afficher. */
-export interface RouteRow {
-  when: string;
+/** Un checkpoint, prêt à afficher. */
+export interface CpRow {
+  dist: string;
   hdg: number;
-  sail: string;
-  twa: string;
-  past: boolean;
-  next: boolean;
-  /** manœuvre : départ (cap actuel), virement, empannage, changement de cap ou de voile */
-  kind: 'start' | 'tack' | 'gybe' | 'turn' | 'sail';
-  /** allure en clair : au près, vent de travers… */
+  eta: string;
   pace: string;
-  /** position dans la frise (0 à 1) */
-  at: number;
+  upwind: boolean;
+  sel: boolean;
 }
 
-/** Résumé du routage : chiffres clés et frise. */
-export interface RouteView {
-  hours: number;
-  sailed: string;
-  gained: string;
-  target: string;
-  vsCap: { text: string; good: boolean } | null;
-  ticks: { at: number; label: string }[];
-  rows: RouteRow[];
-  following: boolean;
-  source: string;
-  defaultTime: string;
-  /** ligne sélectionnée (index) */
-  sel: number;
-}
-
-type AlertAction = 'route' | 'sleep' | 'repair' | 'bear' | 'sail';
+type AlertAction = 'sleep' | 'repair' | 'bear' | 'sail';
 
 const QUICK = ['Bon vent !', 'GG', 'On se voit à l’arrivée', 'Qui a du café ?'];
 
@@ -98,7 +69,8 @@ const SAIL_WHY: Record<SailId, string> = {
 const FC_MAX = 120;
 
 const ICON_PLAY = '<svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><path d="M2,1.5 L12.5,8 L2,14.5 Z" fill="currentColor"/></svg>';
-const ICON_ROUTE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="16" r="2.2" fill="currentColor"/><circle cx="16" cy="4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 14.5 C9 12 6 8 10 7 C12.5 6.4 13 5.5 14 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="2.4 2.2"/></svg>';
+const ICON_ROUTE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 18 V3" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5 3.5 H15 L12.5 7 L15 10.5 H5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+const ICON_FLAG = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 11 V1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M2.5 2 H10 L8.3 4.3 L10 6.6 H2.5 Z" fill="currentColor"/></svg>';
 const ICON_POLAR = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3,2 V18 M3,4 C10,4 16,8 16,12 C16,15 12,17 3,17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_TROPHY = '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M5 2 H13 V7 A4 4 0 0 1 5 7 Z M5 4 H2 A3 3 0 0 0 5 8 M13 4 H16 A3 3 0 0 1 13 8 M9 11 V14 M6 16 H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_WINDS = '<svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true"><path d="M1 5 H12 A3 3 0 1 0 9 2 M1 10 H16 A3 3 0 1 1 13 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -161,7 +133,7 @@ export class Hud {
       </div>
 
       <nav class="rail" aria-label="Outils">
-        <button type="button" data-open="route" aria-expanded="false">${ICON_ROUTE}<span>Routage</span><b class="rbadge" data-rt-badge hidden>ON</b></button>
+        <button type="button" data-open="route" aria-expanded="false">${ICON_ROUTE}<span>Checkpoints</span><b class="rbadge" data-rt-badge hidden>0</b></button>
         <button type="button" data-open="fc" aria-expanded="false">${ICON_WINDS}<span>Prévisions</span><b class="rbadge" data-fc-badge hidden></b></button>
         <button type="button" data-open="tele" aria-expanded="false">${ICON_TELE}<span>Télémétrie</span></button>
         <button type="button" data-open="board" aria-expanded="false" data-board-btn>${ICON_TROPHY}<span>Classement</span></button>
@@ -174,44 +146,23 @@ export class Hud {
       </nav>
 
       <div class="card panel rt" data-panel="route" hidden>
-        <div class="p-head"><span class="eyebrow">Routage</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
-        <div class="rt-ask">
-          <p class="rt-intro" data-rt-intro>Le routeur cherche la route la plus rapide sur les prévisions de vent, en passant par les marques. Choisis jusqu’où il regarde :</p>
-          <div class="rt-hz" role="group" aria-label="Horizon du routage">${(
-            [
-              [6, 'court terme'],
-              [12, 'demi-journée'],
-              [24, 'une journée'],
-              [48, 'deux jours'],
-            ] as const
-          )
-            .map(([h, b]) => `<button type="button" data-rt-h="${h}" aria-pressed="${h === 24}"><b>${h} h</b><small>${b}</small></button>`)
-            .join('')}</div>
-          <button type="button" class="rt-go" data-rt-go><span>Calculer la meilleure route</span><i data-rt-bar></i></button>
-        </div>
-        <div class="rt-res" data-rt-res hidden>
-          <div class="rt-kpi">
-            <div><b data-rk="sailed">—</b><small>parcourus</small></div>
-            <div><b data-rk="gained">—</b><small data-rk="target">vers la marque</small></div>
-            <div data-rk-vs><b data-rk="vs">—</b><small>vs garder ton cap</small></div>
+        <div class="p-head"><span class="eyebrow">Checkpoints</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <p class="rt-intro" data-cp-intro>Pose tes points de passage sur la carte : le pilote file droit vers chacun, dans l’ordre. Face au vent, il serre le vent au plus près : à toi de placer tes points pour tirer tes bords.</p>
+        <button type="button" class="rt-go" data-cp-place><span>+ Poser des checkpoints</span></button>
+        <div class="rt-res" data-cp-res hidden>
+          <div class="rt-kpi cp-kpi">
+            <div><b data-cpk="dist">—</b><small>à parcourir</small></div>
+            <div><b data-cpk="eta">—</b><small data-cpk="etal">au dernier point</small></div>
           </div>
-          <div class="rt-tl" data-rt-tl aria-hidden="true"></div>
-          <ol class="rt-steps" data-rt-steps></ol>
-          <button type="button" class="rt-follow" data-rt-follow>Suivre cette route</button>
-          <p class="rt-src" data-rt-src></p>
-          <details class="rt-edit">
-            <summary>Ajuster les heures</summary>
-            <ol class="rt-list" data-rt-list></ol>
-            <div class="rt-add">
-              <span class="rt-l">Ajouter un ordre</span>
-              <label>à <input type="time" data-rt-time step="900"></label>
-              <label>cap <input type="number" min="0" max="359" data-rt-hdg inputmode="numeric">°</label>
-              <button type="button" class="pill" data-rt-add>Ajouter</button>
-            </div>
-            <button type="button" class="pill ghost rt-clear" data-rt-clear>Effacer le routage</button>
-          </details>
+          <ol class="rt-steps cp-list" data-cp-list></ol>
+          <div class="rt-foot">
+            <button type="button" class="rt-follow" data-cp-follow></button>
+          </div>
+          <button type="button" class="pill ghost rt-clear" data-cp-clear>Tout effacer</button>
+          <p class="rt-src">Glisse un point sur la carte pour le déplacer. Les heures sont des estimations sur les prévisions de vent.</p>
         </div>
       </div>
+      <div class="cp-hint" data-cp-hint hidden><span data-cp-hint-t>Touche la mer pour poser le checkpoint 1</span><button type="button" data-cp-done>Terminé</button></div>
 
       <div class="card panel fc" data-panel="fc" data-fc-panel hidden>
         <div class="p-head"><span class="fc-info"><span class="fc-label" data-fc-label>Prévisions</span><span class="fc-sub" data-fc-sub>Glisse pour voir le vent à venir</span></span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
@@ -242,7 +193,7 @@ export class Hud {
           <div class="eff-bar" aria-hidden="true"><i data-t="effbar"></i></div>
           <div class="foil" data-t="foil"><span class="eyebrow">Foils</span><span class="fstate" data-t="fstate">Archimédien</span><span class="fbar"><i data-t="fload"></i></span></div>
           <div class="tline"><span class="eyebrow">Prochaine marque</span><span data-t="mark">—</span></div>
-          <div class="tline"><span class="eyebrow">ETA routage</span><span data-t="eta">—</span></div>
+          <div class="tline"><span class="eyebrow">Dernier checkpoint</span><span data-t="eta">—</span></div>
         </div>
       </div>
 
@@ -311,7 +262,7 @@ export class Hud {
         <div class="card helm2">
           <div class="seg mini modes" role="group" aria-label="Mode de pilotage">
             <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde le cap que tu as validé">${ICON_LOCK} Cap fixe</button>
-            <button type="button" data-mode="auto" aria-pressed="true" title="Le pilote suit ton programme de routage, sinon la route conseillée">Auto</button>
+            <button type="button" data-mode="auto" aria-pressed="false" title="Le pilote file vers tes checkpoints, l’un après l’autre">${ICON_FLAG} Checkpoints</button>
           </div>
           <div class="h-auto" data-auto-info></div>
           ${pilotDial()}
@@ -411,8 +362,14 @@ export class Hud {
       b.addEventListener('click', () => {
         const m = b.dataset.mode as PilotMode;
         this.cancelPending();
-        if (m === 'auto') this.h.setAuto(true);
-        else this.h.lock('hdg');
+        if (m === 'auto') {
+          if (this.cpCount) this.h.setAuto(true);
+          else {
+            // pas encore de checkpoint : on ouvre le panneau et on passe en pose
+            if (this.openPanel !== 'route') this.toggle('route');
+            this.h.cpPlace(true);
+          }
+        } else this.h.lock('hdg');
       }),
     );
     q(r, '[data-sleep]').addEventListener('click', () => this.h.sleep());
@@ -467,45 +424,21 @@ export class Hud {
     q(r, '[data-fc-play]').addEventListener('click', () => this.h.forecastPlay());
     q(r, '[data-fc-now]').addEventListener('click', () => this.h.forecast(0));
 
-    // routage
-    let rtH = 24;
-    r.querySelectorAll<HTMLButtonElement>('[data-rt-h]').forEach((b) =>
-      b.addEventListener('click', () => {
-        rtH = Number(b.dataset.rtH);
-        r.querySelectorAll<HTMLButtonElement>('[data-rt-h]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-        // un horizon choisi après un premier calcul relance directement le routage
-        if (!q(r, '[data-rt-res]').hidden) this.h.route(rtH);
-      }),
-    );
-    q(r, '[data-rt-steps]').addEventListener('click', (e) => {
+    // checkpoints
+    q(r, '[data-cp-place]').addEventListener('click', () => this.h.cpPlace(!this.placing));
+    q(r, '[data-cp-done]').addEventListener('click', () => this.h.cpPlace(false));
+    q(r, '[data-cp-clear]').addEventListener('click', () => this.h.cpClear());
+    q(r, '[data-cp-follow]').addEventListener('click', () => (this.cpFollowing ? this.h.lock('hdg') : this.h.setAuto(true)));
+    q(r, '[data-cp-list]').addEventListener('click', (e) => {
+      const del = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-del]');
+      if (del) return this.h.cpDelete(Number(del.dataset.del));
       const li = (e.target as HTMLElement).closest<HTMLElement>('li[data-i]');
-      if (li) this.h.routeFocus(Number(li.dataset.i));
-    });
-    q(r, '[data-rt-tl]').addEventListener('click', (e) => {
-      const m = (e.target as HTMLElement).closest<HTMLElement>('[data-i]');
-      if (m) this.h.routeFocus(Number(m.dataset.i));
-    });
-    q(r, '[data-rt-go]').addEventListener('click', () => this.h.route(rtH));
-    q(r, '[data-rt-follow]').addEventListener('click', () => this.h.routeFollow(!this.rtFollowing));
-    q(r, '[data-rt-clear]').addEventListener('click', () => this.h.routeClear());
-    q(r, '[data-rt-add]').addEventListener('click', () => {
-      const tm = q<HTMLInputElement>(r, '[data-rt-time]').value;
-      const hd = Number(q<HTMLInputElement>(r, '[data-rt-hdg]').value);
-      if (!/^\d\d:\d\d$/.test(tm) || !Number.isFinite(hd)) return this.toast('Indique une heure et un cap.');
-      this.h.routeAdd(tm, ((Math.round(hd) % 360) + 360) % 360);
-    });
-    q(r, '[data-rt-list]').addEventListener('click', (e) => {
-      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-i]');
-      if (!b) return;
-      const i = Number(b.dataset.i);
-      if (b.dataset.act === 'del') this.h.routeDelete(i);
-      else this.h.routeShift(i, Number(b.dataset.act));
+      if (li) this.h.cpFocus(Number(li.dataset.i));
     });
 
     q(r, '[data-alert-btn]').addEventListener('click', () => {
       const a = this.alertAction;
-      if (a === 'route') this.h.setAuto(true);
-      else if (a === 'sleep') this.h.sleep();
+      if (a === 'sleep') this.h.sleep();
       else if (a === 'repair') this.h.repair();
       else if (a === 'bear') this.h.bearAway();
       else if (a === 'sail') this.h.autoSail(true);
@@ -646,68 +579,49 @@ export class Hud {
     badge.textContent = `+${Math.round(hours)} h`;
   }
 
-  private rtFollowing = false;
+  private cpFollowing = false;
+  private cpCount = 0;
+  private placing = false;
 
-  /** Calcul en cours : barre de progression dans le bouton (0 à 1), null = terminé. */
-  setRouteBusy(k: number | null) {
-    const b = q<HTMLButtonElement>(this.root, '[data-rt-go]');
-    b.disabled = k !== null;
-    b.classList.toggle('busy', k !== null);
-    q(b, 'span').textContent = k === null ? 'Recalculer la route' : 'Calcul…';
-    q(this.root, '[data-rt-bar]').style.width = `${Math.round((k ?? 0) * 100)}%`;
+  /** Mode pose : bandeau d'aide, bouton du panneau. */
+  setPlacing(on: boolean, next: number) {
+    const r = this.root;
+    this.placing = on;
+    q(r, '[data-cp-hint]').hidden = !on;
+    q(r, '[data-cp-hint-t]').textContent = `Touche la mer pour poser le checkpoint ${next}`;
+    const b = q(r, '[data-cp-place]');
+    b.classList.toggle('on', on);
+    q(b, 'span').textContent = on ? 'Terminé' : '+ Poser des checkpoints';
+    // sur téléphone, le panneau laisse la place à la carte pendant la pose
+    if (on && window.innerWidth <= 760 && this.openPanel === 'route') this.toggle(null);
   }
 
-  /** Routage : chiffres clés, frise des manœuvres, étapes en clair, suivi. null = pas de routage. */
-  setRoute(d: RouteView | null) {
+  /** Liste des checkpoints, total, suivi. */
+  setCheckpoints(d: { rows: CpRow[]; total: string; eta: string; etaLabel: string; following: boolean }) {
     const r = this.root;
-    this.rtFollowing = !!d?.following;
-    q(r, '[data-rt-res]').hidden = !d;
-    q(r, '[data-rt-intro]').hidden = !!d;
-    q(r, '[data-rt-badge]').hidden = !d?.following;
-    q(r, '[data-rt-go] span').textContent = d ? 'Recalculer' : 'Calculer la meilleure route';
-    r.querySelector('.rt')!.classList.toggle('has', !!d);
-    if (!d) return;
-    q(r, '[data-rk="sailed"]').textContent = d.sailed;
-    q(r, '[data-rk="gained"]').textContent = d.gained;
-    q(r, '[data-rk="target"]').textContent = `vers ${d.target}`;
-    const vs = q(r, '[data-rk-vs]');
-    vs.hidden = !d.vsCap;
-    if (d.vsCap) {
-      q(r, '[data-rk="vs"]').textContent = d.vsCap.text;
-      vs.className = d.vsCap.good ? 'good' : '';
-    }
-    const KIND: Record<RouteRow['kind'], string> = { start: 'Cap de départ', tack: 'Virement de bord', gybe: 'Empannage', turn: 'Changement de cap', sail: 'Changement de voile' };
-    const ICONK: Record<RouteRow['kind'], string> = { start: '▶', tack: '⤺', gybe: '⤻', turn: '↗', sail: '⛵' };
-    // frise : maintenant → horizon, graduations, une pastille par manœuvre
-    q(r, '[data-rt-tl]').innerHTML = `<i class="bar"></i>${d.ticks.map((t) => `<span class="tk" style="left: ${(t.at * 100).toFixed(1)}%">${esc(t.label)}</span>`).join('')}${d.rows
-      .map((o, i) => (o.at < 0 || o.at > 1 ? '' : `<b class="mk ${o.kind}${i === d.sel ? ' sel' : ''}${o.past ? ' past' : ''}" style="left: ${(o.at * 100).toFixed(1)}%" data-i="${i}" title="${esc(o.when)} · ${esc(KIND[o.kind])}">${ICONK[o.kind]}</b>`))
-      .join('')}`;
-    q(r, '[data-rt-steps]').innerHTML = d.rows.length
-      ? d.rows
-          .map(
-            (o, i) => `<li data-i="${i}" class="${o.kind}${o.past ? ' past' : ''}${o.next ? ' next' : ''}${i === d.sel ? ' sel' : ''}">
-          <span class="ic">${ICONK[o.kind]}</span>
-          <span class="tx"><small>${esc(o.when)}${o.next && d.following ? ' · prochain' : ''}</small><b>${esc(KIND[o.kind])}</b><em>cap ${String(o.hdg).padStart(3, '0')}° · ${esc(o.sail)} · ${esc(o.pace)}</em></span>
-        </li>`,
-          )
-          .join('')
-      : '<li class="empty">Aucun ordre : le bateau garde son cap.</li>';
-    // réglage fin des heures
-    q(r, '[data-rt-list]').innerHTML = d.rows
+    this.cpFollowing = d.following;
+    this.cpCount = d.rows.length;
+    q(r, '[data-cp-res]').hidden = !d.rows.length;
+    q(r, '[data-cp-intro]').hidden = !!d.rows.length;
+    const badge = q(r, '[data-rt-badge]');
+    badge.hidden = !d.rows.length;
+    badge.textContent = String(d.rows.length);
+    if (!d.rows.length) return;
+    q(r, '[data-cpk="dist"]').textContent = d.total;
+    q(r, '[data-cpk="eta"]').textContent = d.eta;
+    q(r, '[data-cpk="etal"]').textContent = d.etaLabel;
+    q(r, '[data-cp-list]').innerHTML = d.rows
       .map(
-        (o, i) => `<li class="${o.past ? 'past' : ''}">
-          <time>${esc(o.when)}</time>
-          <span class="o"><b>${String(o.hdg).padStart(3, '0')}°</b><small>${esc(KIND[o.kind])}</small></span>
-          <span class="b"><button type="button" data-i="${i}" data-act="-30" aria-label="30 min plus tôt">−30′</button><button type="button" data-i="${i}" data-act="30" aria-label="30 min plus tard">+30′</button><button type="button" data-i="${i}" data-act="del" class="del" aria-label="Supprimer l’ordre">${ICON_CLOSE}</button></span>
+        (o, i) => `<li data-i="${i}" class="${i === 0 ? 'next' : ''}${o.sel ? ' sel' : ''}${o.upwind ? ' up' : ''}">
+          <span class="ic">${i + 1}</span>
+          <span class="tx"><small>${esc(o.eta)}</small><b>${esc(o.dist)} · cap ${String(o.hdg).padStart(3, '0')}°</b><em>${o.upwind ? 'face au vent : le pilote tirera des bords au plus près' : esc(o.pace)}</em></span>
+          <button type="button" class="del" data-del="${i}" aria-label="Supprimer le checkpoint ${i + 1}">${ICON_CLOSE}</button>
         </li>`,
       )
       .join('');
-    const f = q(r, '[data-rt-follow]');
-    f.innerHTML = d.following ? '<b>Le pilote suit cette route</b><small>Toucher pour reprendre la main</small>' : '<b>Suivre cette route</b><small>Le pilote Auto exécute chaque manœuvre à l’heure</small>';
+    const f = q(r, '[data-cp-follow]');
+    f.innerHTML = d.following ? '<b>Le pilote suit tes checkpoints</b><small>Toucher pour repasser en cap fixe</small>' : '<b>Suivre les checkpoints</b><small>Le pilote file vers le point 1, puis le suivant</small>';
     f.classList.toggle('on', d.following);
-    q(r, '[data-rt-src]').textContent = d.source;
-    const tIn = q<HTMLInputElement>(r, '[data-rt-time]');
-    if (!tIn.value) tIn.value = d.defaultTime;
   }
 
   /** Ligne d'état du pilote Auto (ce qu'il suit, prochain ordre). */
@@ -957,7 +871,7 @@ export class Hud {
     q(r, '[data-t="foil"]').hidden = !p.perf.imoca;
     const nm = race.nextMark(p);
     set('mark', p.finished !== null ? 'Course terminée' : nm ? `${nm.short} · ${fmtDist(dist(p.pos, nm.pos), true)} · ${String(Math.round(brg)).padStart(3, '0')}°` : `Arrivée · ${fmtDist(dist(p.pos, race.def.finish), true)} · ${String(Math.round(brg)).padStart(3, '0')}°`);
-    set('eta', p.finished !== null ? fmtDuration(p.finished) : this.etaH !== null ? `${raceClock(race.originUTC, race.t + this.etaH)} · dans ${fmtDuration(this.etaH)}` : 'au-delà des prévisions');
+    set('eta', p.finished !== null ? fmtDuration(p.finished) : this.etaH !== null ? `${raceClock(race.originUTC, race.t + this.etaH)} · dans ${fmtDuration(this.etaH)}` : 'aucun checkpoint');
     const w = race.wind;
     if (w instanceof GridWind) {
       const d = new Date(w.meta.t0);
@@ -1065,10 +979,8 @@ export class Hud {
       action = 'bear';
       btn = 'Abattre';
     } else if (!p.auto && !clearAhead(p.pos[0], p.pos[1], p.hdg, Math.max(p.spd, 8))) {
-      msg = 'La côte est droit devant !';
+      msg = 'La côte est droit devant : change de cap !';
       danger = true;
-      action = 'route';
-      btn = 'Suivre la route';
     } else if (p.energy < 25 && p.sleep <= 0) {
       msg = 'Ton skipper est épuisé : −12 % de vitesse.';
       action = 'sleep';
@@ -1083,8 +995,6 @@ export class Hud {
       const ftwa = Math.abs(norm180(windFrom(w[0], w[1]) - p.hdg));
       if (ftwa < 38 && a > 45) {
         msg = 'Le vent tourne dans 2 h : il faudra virer.';
-        action = 'route';
-        btn = 'Suivre la route';
       }
     }
     this.alertAction = action;

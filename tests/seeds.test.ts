@@ -8,6 +8,7 @@ it('beaucoup de graines : personne ne reste bloqué', () => {
   for (const def of RACES) for (let k = 0; k < (def.fleet ? 4 : 25); k++) {
     const race = new Race(def, DEFAULT_SETUP);
     race.player.auto = true;
+    race.player.isPlayer = false; // le joueur n’a plus de route calculée : ici il navigue comme un concurrent
     race.step(24 * 30, (e) => { if (e.type === 'boat' && e.boat.isPlayer && e.ev === 'avarie') { startRepair(e.boat); } if (e.type === 'boat' && e.boat.isPlayer && e.ev === 'repaired') e.boat.auto = true; });
     for (const b of race.boats) if (b.finished === null) fails.push(`${def.id} ${b.name} ${b.pos.map(x => x.toFixed(2))}`);
   }
