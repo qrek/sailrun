@@ -55,6 +55,15 @@ const SKIPPER_ICON: Record<string, string> = {
   bricoleur: '<path d="M14 34 L 28 20"/><path d="M26 14 A 7 7 0 0 0 34 24 L 30 20 Z"/><circle cx="13" cy="35" r="3"/>',
 };
 
+/** Livrées toutes prêtes (couleurs tirées des nuanciers du garage). */
+const LIVERY_PRESETS: { name: string; color: string; accent: string; pattern: string; sail: string }[] = [
+  { name: 'Corsaire', color: '#111827', accent: '#FACC15', pattern: 'vague', sail: 'carbone' },
+  { name: 'Lagon', color: '#14B8A6', accent: '#FFFFFF', pattern: 'vague', sail: 'blanc' },
+  { name: 'Volcan', color: '#E11D48', accent: '#111827', pattern: 'eclair', sail: 'carbone' },
+  { name: 'Malouine', color: '#1E3A8A', accent: '#FF7A1A', pattern: 'bande', sail: 'gris' },
+  { name: 'Soleil', color: '#FACC15', accent: '#111827', pattern: 'degrade', sail: 'carbone' },
+];
+
 /** Petites icônes du menu de gauche. */
 const SLOT_ICON: Record<Tab, string> = {
   reglages: '<path d="M4 6 H28 M4 12 H28 M4 18 H28"/><circle cx="11" cy="6" r="2.6" class="f"/><circle cx="21" cy="12" r="2.6" class="f"/><circle cx="14" cy="18" r="2.6" class="f"/>',
@@ -71,6 +80,7 @@ export class GarageUI {
   /** zone idéale des réglages, calculée sur les prévisions (null tant qu'elles ne sont pas chargées) */
   private ideal: Tune | null = null;
   private setup: Setup;
+  private shownTab = '';
 
   constructor(
     private root: HTMLElement,
@@ -159,6 +169,11 @@ export class GarageUI {
     });
     if (isBoat) this.bindBoat();
     else this.bindSkipper();
+    const view = `${this.step}.${this.tab}`;
+    if (view !== this.shownTab) {
+      this.shownTab = view;
+      this.root.querySelector('.gx-opts')?.classList.add('enter');
+    }
     this.renderSummary(null);
     this.applyLook();
     this.view.setFocus(isBoat ? (this.tab === 'coque' ? 'mat' : 'all') : 'skipper');
@@ -224,8 +239,12 @@ export class GarageUI {
         `<div class="lv-sw">${list.map((c) => `<button type="button" class="lv-c" ${attr}="${c}" aria-pressed="${c.toLowerCase() === cur.toLowerCase()}" style="--c: ${c}" aria-label="${c}"></button>`).join('')}</div>`;
       const chips = (attr: string, list: { id: string; name: string }[], cur: string) =>
         `<div class="lv-chips">${list.map((x) => `<button type="button" ${attr}="${x.id}" aria-pressed="${x.id === cur}">${esc(x.name)}</button>`).join('')}</div>`;
+      const presets = LIVERY_PRESETS.map(
+        (p, i) => `<button type="button" class="lv-pre" data-pre="${i}" style="--c: ${p.color}; --a: ${p.accent}" aria-label="${esc(p.name)}"><i></i><span>${esc(p.name)}</span></button>`,
+      ).join('');
       box.innerHTML = `
         <div class="lv">
+          <div class="lv-row"><span class="lv-l">Livrées prêtes</span><div class="lv-pres">${presets}<button type="button" class="lv-pre dice" data-rand aria-label="Livrée au hasard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1.6"/><circle cx="16" cy="16" r="1.6"/><circle cx="16" cy="8" r="1.6"/><circle cx="8" cy="16" r="1.6"/><circle cx="12" cy="12" r="1.6"/></svg><span>Au hasard</span></button></div></div>
           <div class="lv-row"><span class="lv-l">Coque</span>${sw('data-hc', HULL_COLORS, st.color)}</div>
           <div class="lv-row"><span class="lv-l">Motif</span>${chips('data-pat', PATTERNS, st.pattern)}</div>
           <div class="lv-row"><span class="lv-l">Filet et têtière</span>${sw('data-ac', ACCENT_COLORS, st.accent)}</div>
@@ -242,6 +261,17 @@ export class GarageUI {
         this.applyLook();
         if (rerender) this.render();
       };
+      box.querySelectorAll<HTMLButtonElement>('[data-pre]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const p = LIVERY_PRESETS[Number(b.dataset.pre)];
+          upd({ color: p.color, accent: p.accent, pattern: p.pattern, sail: p.sail });
+        }),
+      );
+      q(box, '[data-rand]').addEventListener('click', () => {
+        const pick = <T,>(l: T[]) => l[Math.floor(Math.random() * l.length)];
+        const color = pick(HULL_COLORS);
+        upd({ color, accent: pick(ACCENT_COLORS.filter((c) => c.toLowerCase() !== color.toLowerCase())), pattern: pick(PATTERNS).id, sail: pick(CLOTHS).id });
+      });
       box.querySelectorAll<HTMLButtonElement>('[data-hc]').forEach((b) => b.addEventListener('click', () => upd({ color: b.dataset.hc! })));
       box.querySelectorAll<HTMLButtonElement>('[data-ac]').forEach((b) => b.addEventListener('click', () => upd({ accent: b.dataset.ac! })));
       box.querySelectorAll<HTMLButtonElement>('[data-pat]').forEach((b) => b.addEventListener('click', () => upd({ pattern: b.dataset.pat! })));
@@ -313,7 +343,7 @@ export class GarageUI {
           const ideal = id ? `<i class="tn-ideal" style="left: ${Math.max(0, pos(id[t.id]) - 11).toFixed(1)}%; width: ${(Math.min(100, pos(id[t.id]) + 11) - Math.max(0, pos(id[t.id]) - 11)).toFixed(1)}%"></i>` : '';
           return `
           <div class="tn-row" data-tn="${t.id}">
-            <div class="tn-top"><b>${esc(t.label)}</b><span class="tn-val" data-tnv>${fmtClick(v)}</span></div>
+            <div class="tn-top"><b>${esc(t.label)}</b><span class="tn-ok">Zone idéale</span><span class="tn-val" data-tnv>${fmtClick(v)}</span></div>
             <div class="tn-track">
               ${ideal}
               <div class="tn-ticks">${Array.from({ length: 21 }, (_, i) => `<span class="${i === 10 ? 'z' : i % 5 === 0 ? 'M' : ''}"></span>`).join('')}</div>
@@ -325,12 +355,21 @@ export class GarageUI {
         }).join('')}
         <button type="button" class="tn-reset" data-tn-reset>Revenir au réglage de série</button>
       </div>`;
+    const mark = (row: HTMLElement, tid: TuneId) => row.classList.toggle('in', !!id && Math.abs(this.tuneOf(tid) - id[tid]) <= 0.11);
     box.querySelectorAll<HTMLElement>('[data-tn]').forEach((row) => {
       const tid = row.dataset.tn as TuneId;
       const input = row.querySelector('input')!;
+      mark(row, tid);
       input.addEventListener('input', () => {
         const v = Number(input.value) / 10;
+        const was = row.classList.contains('in');
         this.setup.tune = { ...NEUTRAL_TUNE, ...(this.setup.tune ?? {}), [tid]: v };
+        mark(row, tid);
+        if (!was && row.classList.contains('in')) {
+          row.classList.remove('hit');
+          void row.offsetWidth;
+          row.classList.add('hit');
+        }
         storeSetup(this.setup);
         row.querySelector('[data-tnv]')!.textContent = fmtClick(v);
         const slot = this.root.querySelector('[data-tab="reglages"] small');
@@ -393,41 +432,64 @@ export class GarageUI {
   /* ---------- résumé : écarts par domaine et temps estimé sur la vraie météo ---------- */
   private etaTimer = 0;
 
+  private radarPrev: number[] | null = null;
+  private radarAnim = 0;
+  private previewing = false;
+  private lastMin: number | null = null;
+
   private renderSummary(preview: Setup | null) {
     const box = q(this.root, '[data-summary]');
     const p = preview ?? this.setup;
+    this.previewing = !!preview;
     const ds = perfDeltas(p);
     const sk = skipperOf(p.skipper);
-    const max = 2;
-    const rows = ds
-      .map((d) => {
-        const w = (Math.min(max, Math.abs(d.v)) / max) * 50;
-        const v = Math.abs(d.v) < 0.05 ? '0,0' : `${d.v > 0 ? '+' : '−'}${Math.abs(d.v).toFixed(1).replace('.', ',')}`;
-        return `
-        <div class="stat dlt">
-          <div class="row"><span>${esc(d.label)}</span><b class="${d.v > 0.04 ? 'up' : d.v < -0.04 ? 'down' : ''}">${v} %</b></div>
-          <div class="bar mid"><i class="${d.v >= 0 ? 'gain' : 'loss'}" style="${d.v >= 0 ? 'left: 50%' : `left: ${50 - w}%`}; width: ${w}%"></i></div>
-        </div>`;
-      })
-      .join('');
     const est = this.def.realWind ? null : estimatedHours(p, this.def);
     const fit = this.fit();
-    const fitHtml = this.def.realWind
-      ? `<div class="gx-fitg"><span class="gx-eyebrow">Adéquation météo</span><b>${fit === null ? '—' : `${fit} %`}</b><span class="fg-bar"><i style="width: ${fit ?? 0}%" class="${fit === null ? '' : fit >= 85 ? 'ok' : fit >= 65 ? 'mid' : 'bad'}"></i></span></div>`
+    const verdict = fit === null ? 'Calcul de la zone idéale…' : fit >= 92 ? 'Réglage parfait !' : fit >= 78 ? 'Bien réglé' : fit >= 60 ? 'Peut mieux faire' : 'À revoir';
+    const lvl = fit === null ? '' : fit >= 92 ? 'top' : fit >= 78 ? 'ok' : fit >= 60 ? 'mid' : 'bad';
+    const C = 2 * Math.PI * 34;
+    const ring = this.def.realWind
+      ? `<div class="gq ${lvl}">
+          <svg viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="34" class="bg"/><circle cx="42" cy="42" r="34" class="fg" style="stroke-dasharray: ${(((fit ?? 0) / 100) * C).toFixed(1)} ${C.toFixed(1)}"/></svg>
+          <b class="gq-n">${fit === null ? '—' : fit}<small>%</small></b>
+          <span class="gq-t"><span class="gx-eyebrow">Adéquation météo</span><strong>${verdict}</strong><small>Tes réglages face aux vents GFS du parcours</small></span>
+        </div>`
       : '';
     box.innerHTML = `
-      ${fitHtml}
-      <span class="gx-eyebrow">Analyse · écart à la série</span>
-      <div class="gx-stats">${rows}</div>
+      ${ring}
+      <div class="gr">
+        <span class="gx-eyebrow">Profil de vitesse <em>— série <i class="lg s"></i> toi <i class="lg m"></i></em></span>
+        ${radarSvg(ds)}
+      </div>
       <div class="gx-fit">
         <span class="gx-eyebrow">${this.def.realWind ? 'Simulation sur la météo GFS' : 'Pour cette course'}</span>
         <span class="l">Aime ${esc(likesOf(p))}${this.step === 'skipper' ? ` · ${esc(sk.name)}` : ''}</span>
         <span class="eta" data-eta>${est !== null ? `<small>Temps estimé</small><b>${fmtDuration(est)}</b>` : this.def.realWind ? '<small>Calcul du temps estimé…</small>' : ''}</span>
       </div>`;
+    this.animateRadar(ds.map((d) => d.v));
     if (this.def.realWind) {
       window.clearTimeout(this.etaTimer);
       this.etaTimer = window.setTimeout(() => this.fillEta(p), preview ? 220 : 120);
     }
+  }
+
+  /** Le polygone « toi » glisse de l'ancienne forme vers la nouvelle. */
+  private animateRadar(target: number[]) {
+    const poly = this.root.querySelector<SVGPolygonElement>('[data-radar-me]');
+    if (!poly) return;
+    const from = this.radarPrev ?? target;
+    this.radarPrev = target;
+    cancelAnimationFrame(this.radarAnim);
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const k = Math.min(1, (now - t0) / 320);
+      const e = 1 - Math.pow(1 - k, 3);
+      const cur = target.map((v, i) => from[i] + (v - from[i]) * e);
+      poly.setAttribute('points', radarPoints(cur));
+      if (k < 1) this.radarAnim = requestAnimationFrame(step);
+    };
+    poly.setAttribute('points', radarPoints(from));
+    this.radarAnim = requestAnimationFrame(step);
   }
 
   /** Temps de course simulé sur les vraies prévisions, et gain par rapport à la série. */
@@ -445,6 +507,18 @@ export class GarageUI {
     const dstr = `${String(run.getUTCDate()).padStart(2, '0')}/${String(run.getUTCMonth() + 1).padStart(2, '0')} ${String(run.getUTCHours()).padStart(2, '0')}h UTC`;
     const gain = m === 0 ? 'identique à la série' : `${m < 0 ? '−' : '+'}${Math.abs(m) >= 60 ? fmtDuration(Math.abs(m) / 60) : `${Math.abs(m)} min`} vs série`;
     el.innerHTML = `<small>Temps estimé</small><b>${fmtDuration(h)}</b><em class="${m < 0 ? 'up' : m > 0 ? 'down' : ''}">${gain}</em><small class="src">GFS ${dstr}${wind.meta.source === 'snapshot' ? ' · hors ligne' : ''}</small>`;
+    // petit chiffre qui jaillit quand un réglage fait gagner ou perdre du temps
+    if (!this.previewing) {
+      if (this.lastMin !== null && m !== this.lastMin) {
+        const d = m - this.lastMin;
+        const pop = document.createElement('span');
+        pop.className = `eta-pop ${d < 0 ? 'up' : 'down'}`;
+        pop.textContent = `${d < 0 ? '−' : '+'}${Math.abs(d) >= 60 ? fmtDuration(Math.abs(d) / 60) : `${Math.abs(d)} min`}`;
+        el.appendChild(pop);
+        window.setTimeout(() => pop.remove(), 1400);
+      }
+      this.lastMin = m;
+    }
   }
 }
 
@@ -452,4 +526,50 @@ export class GarageUI {
 function fmtClick(v: number): string {
   const n = Math.round(v * 10);
   return n === 0 ? '0' : `${n > 0 ? '+' : '−'}${Math.abs(n)}`;
+}
+
+/* ---------- profil de vitesse en radar ---------- */
+const AX = 5;
+const R0 = 52;
+// ±1 % suffit à remplir ou vider l'axe : les écarts réels sont petits, on les rend lisibles
+const radius = (v: number) => R0 * Math.max(0.15, Math.min(1, 0.6 + v * 0.4));
+const axisAngle = (i: number) => -Math.PI / 2 + (i / AX) * Math.PI * 2;
+
+function radarPoints(vs: number[]): string {
+  return vs
+    .map((v, i) => {
+      const a = axisAngle(i);
+      const r = radius(v);
+      return `${(80 + Math.cos(a) * r).toFixed(1)},${(78 + Math.sin(a) * r).toFixed(1)}`;
+    })
+    .join(' ');
+}
+
+function radarSvg(ds: { label: string; v: number }[]): string {
+  const ring = (k: number) =>
+    Array.from({ length: AX }, (_, i) => {
+      const a = axisAngle(i);
+      return `${(80 + Math.cos(a) * R0 * k).toFixed(1)},${(78 + Math.sin(a) * R0 * k).toFixed(1)}`;
+    }).join(' ');
+  const labels = ds
+    .map((d, i) => {
+      const a = axisAngle(i);
+      const x = 80 + Math.cos(a) * (R0 + 10);
+      const y = 78 + Math.sin(a) * (R0 + 10) + (Math.sin(a) > 0.5 ? 6 : -2);
+      const anchor = Math.abs(Math.cos(a)) < 0.2 ? 'middle' : Math.cos(a) > 0 ? 'start' : 'end';
+      const v = Math.abs(d.v) < 0.05 ? '0' : `${d.v > 0 ? '+' : '−'}${Math.abs(d.v).toFixed(1).replace('.', ',')}`;
+      const cls = d.v > 0.04 ? 'up' : d.v < -0.04 ? 'down' : '';
+      return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="${anchor}" class="ax">${esc(d.label)}</text><text x="${x.toFixed(1)}" y="${(y + 11).toFixed(1)}" text-anchor="${anchor}" class="vv ${cls}">${v} %</text>`;
+    })
+    .join('');
+  const spokes = Array.from({ length: AX }, (_, i) => {
+    const a = axisAngle(i);
+    return `<line x1="80" y1="78" x2="${(80 + Math.cos(a) * R0).toFixed(1)}" y2="${(78 + Math.sin(a) * R0).toFixed(1)}"/>`;
+  }).join('');
+  return `<svg class="radar" viewBox="-42 0 244 152" aria-label="Profil de vitesse">
+    <g class="grid">${[0.35, 0.6, 0.8, 1].map((k) => `<polygon points="${ring(k)}"/>`).join('')}${spokes}</g>
+    <polygon class="serie" points="${radarPoints(ds.map(() => 0))}"/>
+    <polygon class="me" data-radar-me points="${radarPoints(ds.map((d) => d.v))}"/>
+    ${labels}
+  </svg>`;
 }

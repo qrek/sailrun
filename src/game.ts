@@ -83,6 +83,7 @@ export class Game {
     this.engine = new Engine(app.querySelector('#stage')!);
     this.world = new WorldView(this.engine, labels);
     this.garageView = new GarageView(this.engine);
+    if (DEV) (window as unknown as { __garage: GarageView }).__garage = this.garageView;
     this.immersive = new ImmersiveView(this.engine, app);
     this.chart = new ChartView(app);
     this.chart.setUnit(distUnit());

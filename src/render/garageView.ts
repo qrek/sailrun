@@ -7,6 +7,7 @@ import { BoatLook, BoatRig, boatModelVersion, buildBoat, disposeBoat, highlightP
 import { Engine, InputHandler } from './engine';
 import { bannerTexture } from './harbourTown';
 import { buildSaintMalo } from './saintMalo';
+import { HarbourLife, buildHarbourLife, dressShip } from './harbourLife';
 import { setFoam, stylizedWaterMaterial } from './stylizedWater';
 import { SKY_FS, SKY_VS, Wave, seaState, skyUniforms, waveHeight } from './immersive';
 
@@ -148,6 +149,8 @@ export class GarageView {
   private banner!: THREE.Mesh;
   private composer: EffectComposer;
   private bannerTitle = '';
+  private life!: HarbourLife;
+  private foamBase: [number, number, number, number][] = [];
 
   constructor(private engine: Engine) {
     const s = this.scene;
@@ -155,8 +158,8 @@ export class GarageView {
 
     // ciel et lumière d'un matin de départ
     this.skyU = skyUniforms();
-    (this.skyU.uZenith.value as THREE.Color).setRGB(0.09, 0.33, 0.74);
-    (this.skyU.uHorizon.value as THREE.Color).setRGB(0.6, 0.79, 0.93);
+    (this.skyU.uZenith.value as THREE.Color).setRGB(0.06, 0.32, 0.8);
+    (this.skyU.uHorizon.value as THREE.Color).setRGB(0.66, 0.82, 0.95);
     (this.skyU.uSunColor.value as THREE.Color).setRGB(1, 0.9, 0.74);
     // soleil de fin de matinée, de trois-quarts avant : il sculpte la coque
     const sunDir = new THREE.Vector3(0.3, 0.45, -0.85).normalize();
@@ -172,7 +175,7 @@ export class GarageView {
     s.fog = new THREE.Fog(0xa9cbe6, 180, 760);
 
     s.add(new THREE.HemisphereLight(0xcfe4ff, 0x2a3640, 0.6));
-    const key = new THREE.DirectionalLight(0xfff0dc, 3.6);
+    const key = new THREE.DirectionalLight(0xffe2b8, 3.7);
     key.position.copy(sunDir).multiplyScalar(30);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
@@ -313,6 +316,7 @@ export class GarageView {
       // au port, les voiles des voisins sont affalées
       rig.jib.visible = false;
       rig.main.visible = false;
+      dressShip(rig.root, S, 3 + k);
       rig.root.scale.setScalar(S);
       rig.root.position.set(x, 0.04, z);
       rig.root.rotation.y = rot;
@@ -329,7 +333,9 @@ export class GarageView {
     for (const [x, , z] of spots) foam.push([x, z, 0.42, 1.36]);
     foam.push([-0.7, 0, 0.27, 9.05], [-5.8, 0, 0.27, 9.05]);
     for (const x of [-1.0, -6.1]) for (let z = -7; z < 9; z += 6) foam.push([x, z, 0.08, 0.08]);
+    this.foamBase = foam;
     setFoam(this.waterMat, foam);
+    this.life = buildHarbourLife(s, this.engine.small);
   }
 
   /** Nom de la course sur la banderole. */
@@ -396,6 +402,14 @@ export class GarageView {
     this.pivot.add(this.rig.root);
   }
 
+  /** Réglage du cadrage principal (outil de mise au point, ?dev). */
+  debugCam(px: number, py: number, pz: number, lx: number, ly: number, lz: number) {
+    FOCUS.all.pos.set(px, py, pz);
+    FOCUS.all.look.set(lx, ly, lz);
+    this.orbit = 0;
+    this.orbitTarget = 0;
+  }
+
   input(): InputHandler {
     return {
       drag: (dx) => {
@@ -419,6 +433,7 @@ export class GarageView {
       rig.root.userData.look = look;
       rig.jib.visible = false;
       rig.main.visible = false;
+      dressShip(rig.root, S, 3 + n.look);
       rig.root.scale.setScalar(S);
       rig.root.position.set(n.spot[0], 0.04, n.spot[2]);
       rig.root.rotation.y = n.spot[1];
@@ -435,6 +450,7 @@ export class GarageView {
     this.clock += dt;
     const t = this.clock;
     this.waterMat.uniforms.uTime.value = t;
+    setFoam(this.waterMat, this.foamBase.concat(this.life.update(t, dt)));
     this.skyU.uTime.value = t;
 
     // la caméra tourne autour du bateau (côté bassin, pas à travers le ponton)

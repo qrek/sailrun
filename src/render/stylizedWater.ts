@@ -5,7 +5,7 @@ import * as THREE from 'three';
  * bleu profond qui s'éclaircit vers l'horizon, traits d'écume blancs qui dérivent,
  * anneaux d'écume qui ondulent autour des coques, des piles et le long du quai, reflets du soleil nets.
  */
-export const MAX_FOAM = 24;
+export const MAX_FOAM = 40;
 
 export function stylizedWaterMaterial(): THREE.ShaderMaterial {
   const foam: THREE.Vector4[] = [];
