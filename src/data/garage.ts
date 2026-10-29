@@ -97,6 +97,48 @@ export interface Setup {
   livery: string;
   /** réglages fins, de −1 à +1 (0 = réglage de série) */
   tune?: Tune;
+  /** personnalisation esthétique (sans effet sur la vitesse) */
+  style?: Partial<BoatStyle>;
+}
+
+export type Pattern = 'vague' | 'bande' | 'degrade' | 'eclair' | 'uni';
+export type Cloth = 'carbone' | 'gris' | 'blanc';
+export interface BoatStyle {
+  color: string;
+  accent: string;
+  pattern: Pattern;
+  sail: Cloth;
+  name: string;
+  number: string;
+}
+export const HULL_COLORS = ['#FF7A1A', '#E11D48', '#FACC15', '#22C55E', '#14B8A6', '#22D3EE', '#2563EB', '#1E3A8A', '#7C3AED', '#EC4899', '#F4F6F8', '#111827'];
+export const ACCENT_COLORS = ['#FFFFFF', '#111827', '#FACC15', '#FF7A1A', '#E11D48', '#22D3EE', '#22C55E', '#7C3AED'];
+export const PATTERNS: { id: Pattern; name: string }[] = [
+  { id: 'vague', name: 'Vague' },
+  { id: 'bande', name: 'Bande' },
+  { id: 'degrade', name: 'Dégradé' },
+  { id: 'eclair', name: 'Éclair' },
+  { id: 'uni', name: 'Uni' },
+];
+export const CLOTHS: { id: Cloth; name: string }[] = [
+  { id: 'carbone', name: 'Carbone' },
+  { id: 'gris', name: 'Gris' },
+  { id: 'blanc', name: 'Blanc' },
+];
+
+/** Style complet du bateau (valeurs par défaut tirées de la livrée choisie). */
+export function styleOf(s: Setup): BoatStyle {
+  const l = LIVERIES.find((x) => x.id === s.livery) ?? LIVERIES[0];
+  return { color: l.color, accent: '#FFFFFF', pattern: 'vague', sail: 'carbone', name: 'Sail Run', number: 'FRA 1', ...(s.style ?? {}) };
+}
+
+/** Texte foncé lisible sur cette couleur ? */
+export function isLightColor(hex: string): boolean {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150;
 }
 
 export type TuneId = 'rake' | 'foil' | 'trim';

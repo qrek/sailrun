@@ -6,7 +6,7 @@ import { FLAG, IMOCA_RHUM_2026 } from '../data/fleet';
 import { clearAhead } from '../sim/router';
 import { windFrom } from '../sim/wind';
 import { ICON, esc, fmtDuration, q, raceClock } from './dom';
-import { SAIL_ART, crossoverSvg, dialAngle, headingTape, pilotDial, setHeadingTape, setPilotDial, setSpeed, speedGauge, tapeDegPerPx } from './instruments';
+import { SAIL_ART, crossoverSvg, dialAngle, pilotDial, setPilotDial } from './instruments';
 import { DistUnit, distUnit, fmtDist, setDistUnit, toUnit, unitLabel } from './units';
 
 export type LayerId = 'wind' | 'clouds';
@@ -16,6 +16,8 @@ export type PilotMode = 'route' | 'hdg' | 'twa';
 
 export interface HudHandlers {
   steer(delta: number): void;
+  /** carte en relief 3D ou à plat */
+  map3d(on: boolean): void;
   /** consigne de cap en cours de réglage (aperçu sur la carte), null = aucun */
   preview(hdg: number | null): void;
   /** applique la consigne réglée */
@@ -58,6 +60,12 @@ const ICON_WINDS = '<svg width="20" height="16" viewBox="0 0 20 16" aria-hidden=
 const ICON_RADIO = '<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="12" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 7 L 8 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><rect x="8" y="10" width="6" height="4" rx="1" fill="currentColor"/><circle cx="9" cy="18" r="1.2" fill="currentColor"/><circle cx="13" cy="18" r="1.2" fill="currentColor"/><path d="M19.5 9 A5 5 0 0 1 19.5 16 M21.5 7 A8 8 0 0 1 21.5 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const ICON_LOCK = '<svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><rect x="1.5" y="7" width="11" height="8" rx="1.5" fill="currentColor"/><path d="M4 7 V5 A3 3 0 0 1 10 5 V7" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
 const ICON_MOON = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M11 1.5 A6.5 6.5 0 1 0 14.5 11 A5.2 5.2 0 0 1 11 1.5 Z" fill="currentColor"/></svg>';
+const ICON_TELE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2 15 L6 9 L10 12 L14 5 L18 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 18 H18" stroke="currentColor" stroke-width="1.5"/></svg>';
+const ICON_SKIPPER = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="6.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M3 18 C4 12.5 16 12.5 17 18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>';
+const ICON_RELIEF = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M1 16 L7 6 L10.5 11 L13 8 L19 16 Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
+const ICON_EYE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M1.5 10 C4 5 16 5 18.5 10 C16 15 4 15 1.5 10 Z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="2.6" fill="currentColor"/></svg>';
+const ICON_TARGET = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/><path d="M10 1 V4 M10 16 V19 M1 10 H4 M16 10 H19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const ICON_GEAR = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 1.5 V4 M10 16 V18.5 M1.5 10 H4 M16 10 H18.5 M4 4 L5.8 5.8 M14.2 14.2 L16 16 M4 16 L5.8 14.2 M14.2 5.8 L16 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const ICON_CLOSE = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2,2 L12,12 M12,2 L2,12" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
 
 /** Têtes du skipper selon sa forme (dans la jauge d'énergie). */
@@ -88,26 +96,114 @@ export class Hud {
     layers: Record<LayerId, boolean>,
   ) {
     root.innerHTML = `
-      <div class="card rank" data-rank>
+      <div class="card rank" data-rank role="button" tabindex="0" aria-label="Classement">
         <div class="num pos"><span data-pos>P1</span><span class="of" data-of>/6</span></div>
         <div class="meta">
           <span class="eyebrow" data-race></span>
           <span class="remain" data-remain></span>
           <span class="mk" data-mark hidden></span>
         </div>
+        <div class="rk-clock"><span data-sky>${ICON.sun}</span><b class="num" data-clock>J1 · 12:00</b><small>UTC · temps réel</small></div>
       </div>
-      <div class="tl">
-        <button type="button" class="card tl-btn" data-board-btn aria-expanded="false">${ICON_TROPHY}<span>Classement</span></button>
-        <div class="card clock"><span data-sky>${ICON.sun}</span><span class="num t" data-clock>J1 · 12:00</span><span class="eyebrow">UTC</span></div>
-        <div class="card seg" role="group" aria-label="Vitesse du temps">
-          <button type="button" data-pause aria-label="Pause" aria-pressed="false">${ICON.pause}</button>
-          ${TIME_SCALES.map((t) => `<button type="button" data-speed="${t.id}" aria-pressed="false" class="${t.id === '10m' ? 'hide-s' : ''}">${esc(t.label)}</button>`).join('')}
+      <div class="card prestart" data-prestart hidden>
+        <span class="eyebrow">Départ dans</span>
+        <b class="num" data-pre-count>—</b>
+        <small>Règle ton cap et ta voile : le départ est donné à l'heure réelle.</small>
+      </div>
+      <div class="card seg devspeed" data-devspeed role="group" aria-label="Vitesse du temps (test)" hidden>
+        <button type="button" data-pause aria-label="Pause" aria-pressed="false">${ICON.pause}</button>
+        ${TIME_SCALES.map((t) => `<button type="button" data-speed="${t.id}" aria-pressed="false">${esc(t.label)}</button>`).join('')}
+      </div>
+
+      <nav class="rail" aria-label="Outils">
+        <button type="button" data-open="fc" aria-expanded="false">${ICON_WINDS}<span>Prévisions</span><b class="rbadge" data-fc-badge hidden></b></button>
+        <button type="button" data-open="tele" aria-expanded="false">${ICON_TELE}<span>Télémétrie</span></button>
+        <button type="button" data-open="board" aria-expanded="false" data-board-btn>${ICON_TROPHY}<span>Classement</span></button>
+        <button type="button" data-open="skip" aria-expanded="false">${ICON_SKIPPER}<span>Skipper</span><b class="rbadge warn" data-sk-badge hidden>!</b></button>
+        <button type="button" data-open="polar" aria-expanded="false" data-polar>${ICON_POLAR}<span>Polaire</span></button>
+        <button type="button" data-map3d aria-pressed="true">${ICON_RELIEF}<span>Relief 3D</span></button>
+        <button type="button" data-view="immersive" aria-pressed="false">${ICON_EYE}<span>Immersif</span></button>
+        <button type="button" data-view="reset">${ICON_TARGET}<span>Recentrer</span></button>
+        <button type="button" data-open="set" aria-expanded="false">${ICON_GEAR}<span>Options</span></button>
+      </nav>
+
+      <div class="card panel fc" data-panel="fc" data-fc-panel hidden>
+        <div class="p-head"><span class="fc-info"><span class="fc-label" data-fc-label>Prévisions</span><span class="fc-sub" data-fc-sub>Glisse pour voir le vent à venir</span></span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="fc-row">
+          <button type="button" class="fc-play" data-fc-play aria-label="Faire défiler les prévisions">${ICON_PLAY}</button>
+          <div class="fc-track">
+            <input type="range" min="0" max="${FC_MAX}" step="1" value="0" data-fc-range aria-label="Prévisions : heures à venir">
+            <div class="fc-ticks" aria-hidden="true"><span>Maint.</span><span>+24 h</span><span>+48 h</span><span>+72 h</span><span>+96 h</span><span>+5 j</span></div>
+          </div>
+        </div>
+        <button type="button" class="pill fc-now" data-fc-now hidden>Revenir à maintenant</button>
+        <p class="p-note">Clique sur la mer pour poser une sonde : vent, courant et houle à cet endroit.</p>
+      </div>
+
+      <div class="card panel tele" data-panel="tele" data-tele hidden>
+        <div class="p-head"><span class="eyebrow">Télémétrie</span><span class="tele-src" data-tele-src></span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="tele-body" data-tele-body>
+          <div class="tg">
+            <div class="tc"><small>BSP</small><b data-t="bsp">0,0</b><i>nds</i></div>
+            <div class="tc"><small>Cible polaire</small><b data-t="tgt">0,0</b><i data-t="eff">0 %</i></div>
+            <div class="tc"><small>TWS</small><b data-t="tws">0</b><i>nds</i></div>
+            <div class="tc"><small>TWD</small><b data-t="twd">000°</b><i data-t="twdc">N</i></div>
+            <div class="tc"><small>TWA</small><b data-t="twa">0°</b><i data-t="side">TRI</i></div>
+            <div class="tc"><small>HDG</small><b data-t="hdg">000°</b><i>vrai</i></div>
+            <div class="tc"><small>VMG marque</small><b data-t="vmg">0,0</b><i>nds</i></div>
+            <div class="tc"><small>Écart leader</small><b data-t="gap">—</b><i data-t="gapu"></i></div>
+          </div>
+          <div class="eff-bar" aria-hidden="true"><i data-t="effbar"></i></div>
+          <div class="foil" data-t="foil"><span class="eyebrow">Foils</span><span class="fstate" data-t="fstate">Archimédien</span><span class="fbar"><i data-t="fload"></i></span></div>
+          <div class="tline"><span class="eyebrow">Prochaine marque</span><span data-t="mark">—</span></div>
+          <div class="tline"><span class="eyebrow">ETA routage</span><span data-t="eta">—</span></div>
         </div>
       </div>
-      <div class="card board-pop" data-board-pop hidden>
-        <div class="bp-head"><span class="eyebrow" data-board-title>Classement</span><button type="button" class="x" data-board-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+
+      <div class="card panel board-pop" data-panel="board" data-board-pop hidden>
+        <div class="p-head"><span class="eyebrow" data-board-title>Classement</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
         <ol class="board" data-board aria-label="Classement"></ol>
       </div>
+
+      <div class="card panel skip" data-panel="skip" hidden>
+        <div class="p-head"><span class="eyebrow">Skipper</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="skip-row">
+          <div class="skipper-g" data-en-ring>
+            <svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="18" class="bg"/><circle cx="22" cy="22" r="18" class="fg" pathLength="100" data-en-arc/></svg>
+            <span class="face" data-en-face></span>
+          </div>
+          <span class="en-state" data-en-state>En forme · 100 %</span>
+        </div>
+        <button type="button" class="nap" data-sleep>${ICON_MOON}<span>Sieste 2 h</span></button>
+        <p class="p-note">Ton skipper perd environ 2 points d’énergie par heure. Sous 25 %, le bateau va 12 % moins vite. Une sieste de 2 h rend 28 points ; pendant ce temps personne ne règle les voiles, et toucher la barre ou les voiles le réveille.</p>
+      </div>
+
+      <div class="card panel polar" data-panel="polar" data-polar-panel hidden>
+        <div class="p-head"><span class="eyebrow" data-pol-title>Polaire</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="xo" data-xover></div>
+        <div class="pol-body">
+          <svg class="pol-svg" viewBox="-16 -150 186 300" data-pol-svg role="img" aria-label="Vitesse du bateau selon l’angle au vent, pour chaque voile"></svg>
+          <div class="pol-side">
+            <ul class="pol-key">${SAILS.map((s) => `<li><i style="background: ${SAIL_COLOR[s.id]}"></i>${esc(s.name)} <span class="muted">${esc(s.hint)}</span></li>`).join('')}</ul>
+            <p class="pol-why" data-pol-why></p>
+          </div>
+        </div>
+        <span class="eyebrow">D’où vient ta vitesse</span>
+        <ul class="pol-break" data-pol-break></ul>
+      </div>
+
+      <div class="card panel set" data-panel="set" hidden>
+        <div class="p-head"><span class="eyebrow">Options</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="set-row"><span>Distances</span><div class="seg mini" role="group" aria-label="Unité des distances">
+          <button type="button" data-unit="km" aria-pressed="${distUnit() === 'km'}">km</button>
+          <button type="button" data-unit="nm" aria-pressed="${distUnit() === 'nm'}">milles</button>
+        </div></div>
+        <div class="set-row"><span>Vent sur la carte</span><div class="seg mini" role="group" aria-label="Vent sur la carte">
+          <button type="button" data-layer="wind" aria-pressed="${layers.wind}">Traits</button>
+        </div></div>
+        <button type="button" class="pill" data-menu>Retour au menu</button>
+      </div>
+
       <div class="alert" data-alert role="status" hidden>
         ${ICON.wind}
         <span class="msg" data-alert-msg></span>
@@ -125,145 +221,33 @@ export class Hud {
         <span class="pr-time" data-pr-time></span>
       </div>
 
-      <button type="button" class="card fc-tab" data-fc-tab aria-expanded="false">${ICON_WINDS}<span>Prévisions</span><b data-fc-badge hidden></b></button>
-      <div class="card fc" data-fc-panel hidden>
-        <div class="fc-head">
-          <div class="fc-info"><span class="fc-label" data-fc-label>Prévisions</span><span class="fc-sub" data-fc-sub>Glisse pour voir le vent à venir</span></div>
-          <button type="button" class="x" data-fc-close aria-label="Fermer">${ICON_CLOSE}</button>
-        </div>
-        <div class="fc-row">
-          <button type="button" class="fc-play" data-fc-play aria-label="Faire défiler les prévisions">${ICON_PLAY}</button>
-          <div class="fc-track">
-            <input type="range" min="0" max="${FC_MAX}" step="1" value="0" data-fc-range aria-label="Prévisions : heures à venir">
-            <div class="fc-ticks" aria-hidden="true"><span>Maint.</span><span>+24 h</span><span>+48 h</span><span>+72 h</span><span>+96 h</span><span>+5 j</span></div>
+      <div class="cockpit">
+        <div class="card helm2">
+          <div class="seg mini modes" role="group" aria-label="Mode de pilotage">
+            <button type="button" data-mode="route" aria-pressed="true" title="Le pilote suit la route conseillée">Route</button>
+            <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde son cap">Cap</button>
+            <button type="button" data-mode="twa" aria-pressed="false" title="Le bateau garde son angle au vent">TWA</button>
+          </div>
+          ${pilotDial()}
+          <div class="h-read"><span>BSP <b data-bsp>0,0</b></span><span>Vent <b data-tws>0</b> nds</span></div>
+          <div class="h-pend" data-pend hidden><span data-pend-info></span><span class="warn" data-pend-warn></span></div>
+          <div class="h-act">
+            <button type="button" class="nb" data-nudge="-1" aria-label="1° à gauche">−1°</button>
+            <button type="button" class="ok" data-pend-ok disabled><span data-pend-v>OK</span></button>
+            <button type="button" class="nb" data-nudge="1" aria-label="1° à droite">+1°</button>
           </div>
         </div>
-        <button type="button" class="pill fc-now" data-fc-now hidden>Revenir à maintenant</button>
-        <div class="fc-layers">
-          <span class="eyebrow">Sur la carte</span>
-          <div class="seg mini" role="group" aria-label="Calques de la carte">
-            <button type="button" data-layer="wind" aria-pressed="${layers.wind}">Vent</button>
-            <button type="button" data-layer="clouds" aria-pressed="${layers.clouds}">Nuages</button>
-          </div>
-        </div>
-        <div class="legend" data-legend aria-hidden="true"><span class="streak"><i></i><i></i><i></i></span><span>Les traits suivent le vent : plus ils filent et brillent, plus ça souffle. Survole la mer pour la force exacte.</span></div>
-      </div>
-
-      <div class="card tele" data-tele>
-        <button type="button" class="tele-head" data-tele-toggle aria-expanded="true">
-          <span class="eyebrow">Télémétrie</span><span class="tele-src" data-tele-src></span>
-        </button>
-        <div class="tele-body" data-tele-body>
-          <div class="tg">
-            <div class="tc"><small>BSP</small><b data-t="bsp">0,0</b><i>nds</i></div>
-            <div class="tc"><small>Cible polaire</small><b data-t="tgt">0,0</b><i data-t="eff">0 %</i></div>
-            <div class="tc"><small>TWS</small><b data-t="tws">0</b><i>nds</i></div>
-            <div class="tc"><small>TWD</small><b data-t="twd">000°</b><i data-t="twdc">N</i></div>
-            <div class="tc"><small>TWA</small><b data-t="twa">0°</b><i data-t="side">TRI</i></div>
-            <div class="tc"><small>HDG</small><b data-t="hdg">000°</b><i>vrai</i></div>
-            <div class="tc"><small>VMG marque</small><b data-t="vmg">0,0</b><i>nds</i></div>
-            <div class="tc"><small>Écart leader</small><b data-t="gap">—</b><i data-t="gapu"></i></div>
-          </div>
-          <div class="eff-bar" aria-hidden="true"><i data-t="effbar"></i><span class="tick" style="left: 100%"></span></div>
-          <div class="foil" data-t="foil"><span class="eyebrow">Foils</span><span class="fstate" data-t="fstate">Archimédien</span><span class="fbar"><i data-t="fload"></i></span></div>
-          <div class="tline"><span class="eyebrow">Prochaine marque</span><span data-t="mark">—</span></div>
-          <div class="tline"><span class="eyebrow">ETA routage</span><span data-t="eta">—</span></div>
-        </div>
-      </div>
-
-      <div class="bottom">
-        <div class="card dock2">
-          <div class="d-left">
-            ${speedGauge()}
-            <div class="skip">
-              <div class="skipper-g" data-en-ring>
-                <svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="18" class="bg"/><circle cx="22" cy="22" r="18" class="fg" pathLength="100" data-en-arc/></svg>
-                <span class="face" data-en-face></span>
-              </div>
-              <div class="en-txt"><span class="eyebrow">Skipper</span><span class="en-state" data-en-state>En forme · 100 %</span></div>
-              <button type="button" class="qmark" data-en-info aria-expanded="false" aria-label="À quoi sert la sieste ?">?</button>
-            </div>
-            <button type="button" class="nap" data-sleep>${ICON_MOON}<span>Sieste 2 h</span></button>
-          </div>
-
-          <div class="d-pilot">${pilotDial()}</div>
-
-          <div class="d-ctl">
-            <div class="seg mini modes" role="group" aria-label="Mode de pilotage">
-              <button type="button" data-mode="route" aria-pressed="true" title="Le pilote suit la route conseillée par le routage">Route</button>
-              <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde son cap, même si le vent tourne">Cap</button>
-              <button type="button" data-mode="twa" aria-pressed="false" title="Le bateau garde son angle au vent : le cap suit les bascules">Angle</button>
-            </div>
-            <div class="cons" data-cons-box>
-              <span class="eyebrow" data-cons-l>Pilote · route conseillée</span>
-              <b class="num" data-cons>000°</b>
-              <span class="cons-sub" data-cons-sub></span>
-            </div>
-            <div class="pendbox" data-pend hidden>
-              <div class="pend-head"><span class="eyebrow">Nouvelle consigne</span><b class="num" data-pend-v>000°</b></div>
-              <div class="pend-info" data-pend-info></div>
-              <div class="pend-warn" data-pend-warn hidden></div>
-              <div class="nudge" role="group" aria-label="Réglage fin">
-                <button type="button" data-nudge="-5">−5°</button><button type="button" data-nudge="-1">−1°</button><button type="button" data-nudge="1">+1°</button><button type="button" data-nudge="5">+5°</button>
-              </div>
-              <div class="pend-act"><button type="button" class="ghost" data-pend-cancel>Annuler</button><button type="button" class="ok" data-pend-ok>Valider ⏎</button></div>
-            </div>
-            <span class="p-hint" data-pilot-hint>Glisse sur le cadran ou la règle pour régler une consigne</span>
-            ${headingTape()}
-          </div>
-
-          <div class="d-sails">
-            <div class="sx-head">
-              <span class="eyebrow">Voiles · vent <b data-sx-tws>0</b> nds</span>
-              <div class="seg mini" role="group" aria-label="Changement de voile">
-                <button type="button" data-autosail="1" aria-pressed="true" title="Change de voile tout seul quand une autre est meilleure">Auto</button>
-                <button type="button" data-autosail="0" aria-pressed="false" title="Garde la voile actuelle, quoi qu’il arrive">${ICON_LOCK}</button>
-              </div>
-              <button type="button" class="icon-pill" data-polar aria-pressed="false" aria-label="Polaire : quelle voile pour quel vent" title="Polaire">${ICON_POLAR}</button>
-            </div>
-            <div class="xo" data-xover></div>
-            <div class="sails" role="group" aria-label="Voiles">
-              ${SAILS.map((s) => `<button type="button" class="sail" data-sail="${s.id}" aria-pressed="false" style="--sc: ${SAIL_COLOR[s.id]}" title="${esc(s.name)} : ${esc(s.hint)}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[s.id]}</svg><span class="sn">${esc(s.name)}</span><span class="sp" data-sp="${s.id}">100 %</span></button>`).join('')}
+        <div class="card sailc">
+          <div class="sx-head">
+            <span class="eyebrow">Voile</span>
+            <div class="seg mini" role="group" aria-label="Changement de voile">
+              <button type="button" data-autosail="1" aria-pressed="true" title="Change de voile tout seul quand une autre est meilleure">Auto</button>
+              <button type="button" data-autosail="0" aria-pressed="false" title="Garde la voile actuelle">${ICON_LOCK}</button>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div class="card pop energy-pop" data-en-pop hidden>
-        <button type="button" class="x" data-en-close aria-label="Fermer">${ICON_CLOSE}</button>
-        <span class="eyebrow">À quoi sert la sieste ?</span>
-        <p>Ton skipper perd environ <b>2 points d’énergie par heure</b>.</p>
-        <p>Sous <b>25 %</b>, il est épuisé : le bateau va <b>12 % moins vite</b>, les virements et les changements de voile prennent plus de temps, et la casse devient plus probable dans la brise.</p>
-        <p>Une <b>sieste de 2 h</b> rend environ <b>28 points</b>. Pendant ce temps le bateau continue seul : le pilote suit la route s’il est activé, sinon la barre garde son cap ou son angle. Il va 7 % moins vite.</p>
-        <p>Mais <b>personne ne règle les voiles</b> : la voile auto est en pause. Et toucher la barre ou les voiles <b>réveille le skipper</b>.</p>
-        <p class="muted">Le bon moment : vent stable, pas de virement ni de changement de voile prévu (regarde les prévisions), avant de passer sous 30 %.</p>
-      </div>
-
-      <div class="card pop polar" data-polar-panel hidden>
-        <button type="button" class="x" data-polar-close aria-label="Fermer">${ICON_CLOSE}</button>
-        <span class="eyebrow" data-pol-title>Polaire</span>
-        <div class="pol-body">
-          <svg class="pol-svg" viewBox="-16 -150 186 300" data-pol-svg role="img" aria-label="Vitesse du bateau selon l’angle au vent, pour chaque voile"></svg>
-          <div class="pol-side">
-            <ul class="pol-key">${SAILS.map((s) => `<li><i style="background: ${SAIL_COLOR[s.id]}"></i>${esc(s.name)} <span class="muted">${esc(s.hint)}</span></li>`).join('')}</ul>
-            <p class="pol-why" data-pol-why></p>
+          <div class="sails" role="group" aria-label="Voiles">
+            ${SAILS.map((s) => `<button type="button" class="sail" data-sail="${s.id}" aria-pressed="false" style="--sc: ${SAIL_COLOR[s.id]}" title="${esc(s.name)} : ${esc(s.hint)}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[s.id]}</svg><span class="sn">${esc(s.name)}</span><span class="sp" data-sp="${s.id}">100 %</span></button>`).join('')}
           </div>
-        </div>
-        <span class="eyebrow">D’où vient ta vitesse</span>
-        <ul class="pol-break" data-pol-break></ul>
-      </div>
-
-      <div class="bl">
-        <div class="card seg" role="group" aria-label="Vue">
-          <button type="button" data-view="2d" aria-pressed="false">2D</button>
-          <button type="button" data-view="3d" aria-pressed="true">3D</button>
-          <button type="button" data-view="immersive" aria-pressed="false" title="Caméra au ras de l’eau, près du bateau (touche I)">Immersif</button>
-          <button type="button" data-view="reset" class="hide-s" aria-pressed="false">Recentrer</button>
-          <button type="button" data-menu aria-pressed="false">Menu</button>
-        </div>
-        <div class="card seg units" role="group" aria-label="Unité des distances">
-          <button type="button" data-unit="km" aria-pressed="${distUnit() === 'km'}">km</button>
-          <button type="button" data-unit="nm" aria-pressed="${distUnit() === 'nm'}">milles</button>
         </div>
       </div>
 
@@ -280,40 +264,24 @@ export class Hud {
         <button type="button" class="vhf-btn" data-vhf-btn aria-expanded="false" aria-label="Radio VHF">${ICON_RADIO}<b class="vhf-badge" data-vhf-badge hidden>0</b></button>
       </div>`;
     this.bind();
-    this.setLegend(layers.wind);
+  }
+
+  private openPanel: string | null = null;
+  /** Un seul panneau ouvert à la fois, ouvert depuis la barre d'outils. */
+  private toggle(id: string | null) {
+    const r = this.root;
+    const next = id === this.openPanel ? null : id;
+    if (this.openPanel === 'fc' && next !== 'fc') this.h.forecast(0);
+    this.openPanel = next;
+    r.querySelectorAll<HTMLElement>('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== next));
+    r.querySelectorAll<HTMLButtonElement>('[data-open]').forEach((b) => b.setAttribute('aria-expanded', String(b.dataset.open === next)));
+    this.polarOpen = next === 'polar';
+    this.lastPolarKey = '';
   }
 
   private bind() {
     const r = this.root;
-    // règle de cap : on la fait glisser, ça règle une nouvelle consigne (à valider)
-    const tape = q(r, '[data-tape]');
-    let lastX: number | null = null;
-    let acc = 0;
-    tape.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      tape.setPointerCapture(e.pointerId);
-      lastX = e.clientX;
-      acc = 0;
-      tape.classList.add('drag');
-    });
-    tape.addEventListener('pointermove', (e) => {
-      if (lastX === null) return;
-      // glisser vers la droite fait défiler la règle vers la droite : on tourne à gauche
-      acc += -(e.clientX - lastX) * tapeDegPerPx(tape);
-      lastX = e.clientX;
-      const step = Math.trunc(acc);
-      if (step !== 0) {
-        acc -= step;
-        this.nudge(step);
-      }
-    });
-    const end = () => {
-      lastX = null;
-      tape.classList.remove('drag');
-    };
-    tape.addEventListener('pointerup', end);
-    tape.addEventListener('pointercancel', end);
-    // cadran du pilote : on attrape le losange (ou n'importe où sur la couronne) et on tourne
+    // cadran du pilote : on attrape la couronne et on tourne, puis OK juste en dessous
     const dial = q(r, '[data-pdial]');
     let dialOn = false;
     const fromDial = (e: PointerEvent) => {
@@ -336,23 +304,20 @@ export class Hud {
     };
     dial.addEventListener('pointerup', dend);
     dial.addEventListener('pointercancel', dend);
-    for (const el of [tape, dial]) {
-      el.addEventListener('keydown', (e) => {
-        const k = (e as KeyboardEvent).key;
-        if (k === 'ArrowLeft' || k === 'ArrowRight') {
-          e.preventDefault();
-          e.stopPropagation();
-          this.nudge(k === 'ArrowLeft' ? -2 : 2);
-        } else if (k === 'Enter') {
-          e.preventDefault();
-          e.stopPropagation();
-          this.commitPending();
-        }
-      });
-    }
+    dial.addEventListener('keydown', (e) => {
+      const k = (e as KeyboardEvent).key;
+      if (k === 'ArrowLeft' || k === 'ArrowRight') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.nudge(k === 'ArrowLeft' ? -2 : 2);
+      } else if (k === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.commitPending();
+      }
+    });
     r.querySelectorAll<HTMLButtonElement>('[data-nudge]').forEach((b) => b.addEventListener('click', () => this.nudge(Number(b.dataset.nudge))));
     q(r, '[data-pend-ok]').addEventListener('click', () => this.commitPending());
-    q(r, '[data-pend-cancel]').addEventListener('click', () => this.cancelPending());
     r.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
       b.addEventListener('click', () => {
         const m = b.dataset.mode as PilotMode;
@@ -365,6 +330,12 @@ export class Hud {
     q(r, '[data-pause]').addEventListener('click', () => this.h.pause());
     r.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => b.addEventListener('click', () => this.h.speed(b.dataset.speed!)));
     r.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((b) => b.addEventListener('click', () => this.h.view(b.dataset.view as ViewMode)));
+    q(r, '[data-map3d]').addEventListener('click', () => {
+      const b = q(r, '[data-map3d]');
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      b.setAttribute('aria-pressed', String(on));
+      this.h.map3d(on);
+    });
     q(r, '[data-menu]').addEventListener('click', () => this.h.menu());
     r.querySelectorAll<HTMLButtonElement>('[data-say]').forEach((b) => b.addEventListener('click', () => this.h.say(b.textContent ?? '')));
     r.querySelectorAll<HTMLButtonElement>('[data-sail]').forEach((b) => b.addEventListener('click', () => this.h.sail(b.dataset.sail as SailId)));
@@ -377,47 +348,10 @@ export class Hud {
         this.h.units(u);
       }),
     );
-    // classement à la demande
-    const bpop = q(r, '[data-board-pop]');
-    const bbtn = q(r, '[data-board-btn]');
-    const toggleBoard = (open: boolean) => {
-      bpop.hidden = !open;
-      bbtn.setAttribute('aria-expanded', String(open));
-    };
-    bbtn.addEventListener('click', () => toggleBoard(!!bpop.hidden));
-    q(r, '[data-rank]').addEventListener('click', () => toggleBoard(!!bpop.hidden));
-    q(r, '[data-board-close]').addEventListener('click', () => toggleBoard(false));
-    // télémétrie repliable
-    const tbtn = q(r, '[data-tele-toggle]');
-    const tset = (open: boolean) => {
-      q(r, '[data-tele-body]').hidden = !open;
-      tbtn.setAttribute('aria-expanded', String(open));
-      try {
-        localStorage.setItem('sailgame.tele.v1', open ? '1' : '0');
-      } catch {
-        /* rien */
-      }
-    };
-    tbtn.addEventListener('click', () => tset(tbtn.getAttribute('aria-expanded') !== 'true'));
-    let teleOpen = window.innerWidth > 900;
-    try {
-      const v = localStorage.getItem('sailgame.tele.v1');
-      if (v) teleOpen = v === '1';
-    } catch {
-      /* rien */
-    }
-    tset(teleOpen);
-    // prévisions dans un onglet
-    const fpan = q(r, '[data-fc-panel]');
-    const ftab = q(r, '[data-fc-tab]');
-    const toggleFc = (open: boolean) => {
-      fpan.hidden = !open;
-      ftab.setAttribute('aria-expanded', String(open));
-      ftab.hidden = open;
-      if (!open) this.h.forecast(0);
-    };
-    ftab.addEventListener('click', () => toggleFc(true));
-    q(r, '[data-fc-close]').addEventListener('click', () => toggleFc(false));
+    // barre d'outils et panneaux
+    r.querySelectorAll<HTMLButtonElement>('[data-open]').forEach((b) => b.addEventListener('click', () => this.toggle(b.dataset.open!)));
+    r.querySelectorAll<HTMLButtonElement>('[data-close]').forEach((b) => b.addEventListener('click', () => this.toggle(null)));
+    q(r, '[data-rank]').addEventListener('click', () => this.toggle('board'));
     // radio VHF
     const vpan = q(r, '[data-vhf-panel]');
     const vbtn = q(r, '[data-vhf-btn]');
@@ -435,32 +369,14 @@ export class Hud {
       b.addEventListener('click', () => {
         const on = b.getAttribute('aria-pressed') !== 'true';
         b.setAttribute('aria-pressed', String(on));
-        if (b.dataset.layer === 'wind') this.setLegend(on);
         this.h.layer(b.dataset.layer as LayerId, on);
       }),
     );
-
     // prévisions
     const range = q<HTMLInputElement>(r, '[data-fc-range]');
     range.addEventListener('input', () => this.h.forecast(Number(range.value)));
     q(r, '[data-fc-play]').addEventListener('click', () => this.h.forecastPlay());
     q(r, '[data-fc-now]').addEventListener('click', () => this.h.forecast(0));
-
-    // panneaux
-    const enPop = q(r, '[data-en-pop]');
-    const enBtn = q(r, '[data-en-info]');
-    const toggleEn = (open: boolean) => {
-      enPop.hidden = !open;
-      enBtn.setAttribute('aria-expanded', String(open));
-      if (open) this.setPolar(false);
-    };
-    enBtn.addEventListener('click', () => toggleEn(!!enPop.hidden));
-    q(r, '[data-en-close]').addEventListener('click', () => toggleEn(false));
-    q(r, '[data-polar]').addEventListener('click', () => {
-      this.setPolar(!this.polarOpen);
-      if (this.polarOpen) toggleEn(false);
-    });
-    q(r, '[data-polar-close]').addEventListener('click', () => this.setPolar(false));
 
     q(r, '[data-alert-btn]').addEventListener('click', () => {
       const a = this.alertAction;
@@ -470,6 +386,23 @@ export class Hud {
       else if (a === 'bear') this.h.bearAway();
       else if (a === 'sail') this.h.autoSail(true);
     });
+  }
+
+  /** Avant le départ : compte à rebours ; null = course lancée. */
+  setPrestart(ms: number | null) {
+    const el = q(this.root, '[data-prestart]');
+    el.hidden = ms === null;
+    if (ms === null) return;
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    q(el, '[data-pre-count]').textContent = `${d ? `${d} j ` : ''}${String(h).padStart(2, '0')} h ${String(m).padStart(2, '0')} min ${String(s % 60).padStart(2, '0')} s`;
+  }
+
+  /** Mode test : accélération du temps visible (?dev dans l'adresse). */
+  setDev(on: boolean) {
+    q(this.root, '[data-devspeed]').hidden = !on;
   }
 
   /** dernier état du bateau affiché (pour les réglages à la souris) */
@@ -515,42 +448,26 @@ export class Hud {
     const v = this.view;
     const pend = this.pending;
     setPilotDial(r, { hdg: v.hdg, twd: v.twd, twa: v.twa, cons: v.auto ? null : v.hdg, pending: pend, wp: v.wp });
-    if (!q(r, '[data-tape]').classList.contains('drag') || pend !== null) setHeadingTape(r, pend ?? v.hdg, v.twd, v.wp);
     const deg = (x: number) => `${String(Math.round(((x % 360) + 360) % 360)).padStart(3, '0')}°`;
     const side = (twa: number) => `${Math.round(Math.abs(twa))}° ${twa < 0 ? 'bâb' : 'tri'}`;
-    // consigne active
-    const lab = q(r, '[data-cons-l]');
-    const val = q(r, '[data-cons]');
-    const sub = q(r, '[data-cons-sub]');
-    if (v.auto) {
-      lab.textContent = 'Pilote · route conseillée';
-      val.textContent = v.wp === null ? '—' : deg(v.wp);
-      sub.textContent = `Cap ${deg(v.hdg)} · TWA ${side(v.twa)}`;
-    } else if (v.lock === 'twa') {
-      lab.textContent = 'Angle au vent tenu';
-      val.textContent = side(v.twa);
-      sub.textContent = `Cap ${deg(v.hdg)} · suit les bascules`;
-    } else {
-      lab.textContent = 'Cap tenu';
-      val.textContent = deg(v.hdg);
-      sub.textContent = `TWA ${side(v.twa)} · le vent peut tourner`;
-    }
     r.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === (v.auto ? 'route' : v.lock))));
-    // aperçu
+    // aperçu de la nouvelle consigne, juste au-dessus du bouton OK
     const box = q(r, '[data-pend]');
     box.hidden = pend === null;
-    q(r, '[data-pilot-hint]').hidden = pend !== null;
-    q(r, '[data-cons-box]').classList.toggle('dim', pend !== null);
+    const ok = q<HTMLButtonElement>(r, '[data-pend-ok]');
+    ok.disabled = pend === null;
+    ok.classList.toggle('on', pend !== null);
+    if (pend === null) q(r, '[data-pend-v]').textContent = 'OK';
     if (pend === null || !v.boat) return;
     const b = v.boat;
     const ntwa = norm180(v.twd - pend);
     const dh = norm180(pend - v.hdg);
-    q(r, '[data-pend-v]').textContent = v.lock === 'twa' && !v.auto ? side(ntwa) : deg(pend);
+    q(r, '[data-pend-v]').textContent = `OK ${v.lock === 'twa' && !v.auto ? side(ntwa) : deg(pend)}`;
     const sail = b.autoSail ? bestSail(ntwa, v.tws) : b.sail;
     const bsp = boatSpeed(ntwa, v.tws, b.perf, sail);
     const tgt = v.wp;
     const vmg = tgt === null ? null : bsp * Math.cos((norm180(pend - tgt) * Math.PI) / 180);
-    q(r, '[data-pend-info]').innerHTML = `${dh >= 0 ? '+' : '−'}${Math.abs(Math.round(dh))}° · TWA <b>${side(ntwa)}</b> · BSP <b>${kn(bsp)}</b> nds${vmg !== null ? ` · VMG route <b>${kn(vmg)}</b>` : ''}`;
+    q(r, '[data-pend-info]').innerHTML = `${dh >= 0 ? '+' : '−'}${Math.abs(Math.round(dh))}° · TWA <b>${side(ntwa)}</b> · <b>${kn(bsp)}</b> nds${vmg !== null ? ` · VMG <b>${kn(vmg)}</b>` : ''}`;
     const warn: string[] = [];
     const a = Math.abs(ntwa);
     if (a < 38) warn.push('Face au vent : le bateau s’arrête.');
@@ -565,7 +482,7 @@ export class Hud {
     }
     const w = q(r, '[data-pend-warn]');
     w.hidden = !warn.length;
-    w.innerHTML = warn.map((x) => `<span>${esc(x)}</span>`).join('');
+    w.textContent = warn.join(' ');
   }
   private unread = 0;
   private xkey = '';
@@ -578,26 +495,13 @@ export class Hud {
     q(this.root, '[data-vhf-btn]').classList.toggle('ping', n > 0);
   }
 
-  private setPolar(open: boolean) {
-    this.polarOpen = open;
-    q(this.root, '[data-polar-panel]').hidden = !open;
-    q(this.root, '[data-polar]').setAttribute('aria-pressed', String(open));
-    this.lastPolarKey = '';
-  }
-
-  private setLegend(on: boolean) {
-    q(this.root, '[data-legend]').hidden = !on;
-  }
-
-  setControls(speedId: string, paused: boolean, is2d: boolean, immersive = false) {
+  setControls(speedId: string, paused: boolean, _is2d: boolean, immersive = false) {
     this.root.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(!paused && b.dataset.speed === speedId)));
     q(this.root, '[data-pause]').setAttribute('aria-pressed', String(paused));
-    q(this.root, '[data-view="2d"]').setAttribute('aria-pressed', String(is2d && !immersive));
-    q(this.root, '[data-view="3d"]').setAttribute('aria-pressed', String(!is2d && !immersive));
     q(this.root, '[data-view="immersive"]').setAttribute('aria-pressed', String(immersive));
     // les prévisions concernent la carte : on les range en vue immersive
-    q(this.root, '[data-fc-tab]').hidden = immersive || !q(this.root, '[data-fc-panel]').hidden;
-    if (immersive) q(this.root, '[data-fc-panel]').hidden = true;
+    if (immersive && this.openPanel === 'fc') this.toggle(null);
+    q(this.root, '[data-open="fc"]').hidden = immersive;
   }
 
   /** Curseur des prévisions : décalage en heures, lecture en cours, texte. */
@@ -717,7 +621,7 @@ export class Hud {
     const mk = q(r, '[data-mark]');
     mk.hidden = !nm || p.finished !== null;
     if (nm) mk.innerHTML = `Marque ${p.mark + 1}/${race.def.marks!.length} · <b>${esc(nm.name)}</b> · ${fmtDist(dist(p.pos, nm.pos), true)}`;
-    q(r, '[data-board-title]').textContent = `Classement${race.def.klass ? ` · ${race.def.klass}` : ''} · ${raceClock(race.def.startUTC, race.t)} UTC`;
+    q(r, '[data-board-title]').textContent = `Classement${race.def.klass ? ` · ${race.def.klass}` : ''} · ${raceClock(race.originUTC, race.t)} UTC`;
 
     // classement
     const board = q(r, '[data-board]');
@@ -744,8 +648,8 @@ export class Hud {
     this.lastOrder = ids;
 
     // barre
-    setSpeed(r, p.spd, boatSpeed(p.twa, p.tws, p.perf, bestSail(p.twa, p.tws)));
-    q(r, '[data-sub]').textContent = `VENT ${Math.round(p.tws)} NDS ${cardinal(p.twd)}`;
+    q(r, '[data-bsp]').textContent = kn(p.spd);
+    q(r, '[data-tws]').textContent = String(Math.round(p.tws));
     const wp = p.route[p.wp];
     const wpb = wp && p.finished === null ? bearing(p.pos, wp) : null;
     this.view = { hdg: p.hdg, twd: p.twd, twa: p.twa, tws: p.tws, wp: wpb, auto: p.auto, lock: p.lock, boat: p };
@@ -763,9 +667,8 @@ export class Hud {
       q(r, `[data-sp="${s.id}"]`).textContent = p.sail === s.id && p.sailChange > 0 ? 'envoi…' : pct(sailFactor(s.id, p.twa, p.tws));
     }
     r.querySelectorAll<HTMLButtonElement>('[data-autosail]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.autosail === '1') === p.autoSail)));
-    q(r, '[data-sx-tws]').textContent = String(Math.round(p.tws));
     const xkey = `${Math.round(p.tws)}.${Math.round(p.twa)}.${this.pending === null ? '' : Math.round(norm180(p.twd - this.pending))}`;
-    if (xkey !== this.xkey) {
+    if (xkey !== this.xkey && this.polarOpen) {
       this.xkey = xkey;
       q(r, '[data-xover]').innerHTML = crossoverSvg((a) => bestSail(a, p.tws), SAIL_COLOR, p.twa, this.pending === null ? null : norm180(p.twd - this.pending));
     }
@@ -776,6 +679,7 @@ export class Hud {
     arc.setAttribute('stroke-dasharray', `${e} 100`);
     const tone = p.sleep > 0 ? 'sleep' : e < 25 ? 'bad' : e < 45 ? 'mid' : 'ok';
     q(r, '[data-en-ring]').className = `skipper-g ${tone}`;
+    q(r, '[data-sk-badge]').hidden = !(e < 35 && p.sleep <= 0 && p.finished === null);
     q(r, '[data-en-face]').innerHTML = FACE[tone];
     const st = q(r, '[data-en-state]');
     st.textContent = p.sleep > 0 ? `Dort · encore ${fmtDuration(p.sleep)} · ${e} %` : e < 25 ? `Épuisé · −12 % · ${e} %` : e < 45 ? `Fatigué · ${e} %` : `En forme · ${e} %`;
@@ -794,7 +698,7 @@ export class Hud {
     }
 
     // horloge
-    q(r, '[data-clock]').textContent = raceClock(race.def.startUTC, race.t);
+    q(r, '[data-clock]').textContent = raceClock(race.originUTC, race.t);
     q(r, '[data-sky]').innerHTML = day >= 0.5 ? ICON.sun : ICON.moon;
 
     if (this.polarOpen) this.drawPolar(p);
@@ -853,7 +757,7 @@ export class Hud {
     q(r, '[data-t="foil"]').hidden = !p.perf.imoca;
     const nm = race.nextMark(p);
     set('mark', p.finished !== null ? 'Course terminée' : nm ? `${nm.short} · ${fmtDist(dist(p.pos, nm.pos), true)} · ${String(Math.round(brg)).padStart(3, '0')}°` : `Arrivée · ${fmtDist(dist(p.pos, race.def.finish), true)} · ${String(Math.round(brg)).padStart(3, '0')}°`);
-    set('eta', p.finished !== null ? fmtDuration(p.finished) : this.etaH !== null ? `${raceClock(race.def.startUTC, race.t + this.etaH)} · dans ${fmtDuration(this.etaH)}` : 'au-delà des prévisions');
+    set('eta', p.finished !== null ? fmtDuration(p.finished) : this.etaH !== null ? `${raceClock(race.originUTC, race.t + this.etaH)} · dans ${fmtDuration(this.etaH)}` : 'au-delà des prévisions');
     const w = race.wind;
     if (w instanceof GridWind) {
       const d = new Date(w.meta.t0);

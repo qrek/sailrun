@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { BoatLook, BoatRig, buildBoat, disposeBoat, highlightPart, trimBoat } from './boatModel';
 import { Engine, InputHandler } from './engine';
 import { bannerTexture } from './harbourTown';
@@ -15,6 +20,26 @@ import { SKY_FS, SKY_VS, Wave, seaState, skyUniforms, waveHeight } from './immer
 
 const S = 2.6; // longueur du bateau dans la scène
 const LIVERIES = ['#2563EB', '#E11D48', '#FACC15', '#10B981', '#8B5CF6', '#F97316', '#0EA5E9', '#F43F5E'];
+
+/** Étalonnage : tons chauds, contraste doux, saturation, vignettage — un matin de départ ensoleillé. */
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, uVig: { value: 0.32 }, uWarm: { value: 0.06 } },
+  vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uVig, uWarm; varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec3 col = c.rgb;
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, 1.12);
+      // ombres légèrement bleutées, hautes lumières dorées
+      col += vec3(uWarm, uWarm * 0.45, -uWarm * 0.6) * smoothstep(0.3, 1.2, l);
+      col += vec3(-0.01, 0.0, 0.025) * (1.0 - smoothstep(0.0, 0.35, l));
+      vec2 d = vUv - 0.5;
+      col *= 1.0 - uVig * smoothstep(0.25, 0.85, length(d * vec2(1.15, 1.0)));
+      gl_FragColor = vec4(col, c.a);
+    }`,
+};
 
 /** Planches du ponton. */
 function planksTexture(): THREE.CanvasTexture {
@@ -60,6 +85,7 @@ export class GarageView {
   private flags: THREE.Mesh[] = [];
   private neighbours: { rig: BoatRig; phase: number }[] = [];
   private banner!: THREE.Mesh;
+  private composer: EffectComposer;
   private bannerTitle = '';
 
   constructor(private engine: Engine) {
@@ -71,7 +97,7 @@ export class GarageView {
     (this.skyU.uZenith.value as THREE.Color).setRGB(0.16, 0.43, 0.82);
     (this.skyU.uHorizon.value as THREE.Color).setRGB(0.76, 0.87, 0.95);
     (this.skyU.uSunColor.value as THREE.Color).setRGB(1, 0.86, 0.66);
-    const sunDir = new THREE.Vector3(-0.55, 0.32, -0.77).normalize();
+    const sunDir = new THREE.Vector3(0.62, 0.3, 0.72).normalize();
     (this.skyU.uSunDir.value as THREE.Vector3).copy(sunDir);
     const sky = new THREE.Mesh(new THREE.SphereGeometry(900, 32, 16), new THREE.ShaderMaterial({ uniforms: this.skyU, vertexShader: SKY_VS, fragmentShader: SKY_FS, side: THREE.BackSide, depthWrite: false }));
     sky.frustumCulled = false;
@@ -84,7 +110,7 @@ export class GarageView {
     s.fog = new THREE.Fog(0xc9dbe8, 90, 420);
 
     s.add(new THREE.HemisphereLight(0xdfeeff, 0x3a4a52, 0.9));
-    const key = new THREE.DirectionalLight(0xffe2bf, 3.0);
+    const key = new THREE.DirectionalLight(0xffd9a8, 3.3);
     key.position.copy(sunDir).multiplyScalar(30);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
@@ -114,7 +140,18 @@ export class GarageView {
     this.pivot.scale.setScalar(S);
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
-    engine.onResize(() => this.applyFrame());
+    // post-traitement : halo du soleil sur l'eau et les coques, étalonnage, vignettage
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: engine.small ? 0 : 4 });
+    this.composer = new EffectComposer(r, rt);
+    this.composer.addPass(new RenderPass(s, this.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.32, 0.55, 0.88));
+    this.composer.addPass(new ShaderPass(GradeShader));
+    this.composer.addPass(new OutputPass());
+    engine.onResize((w, h) => {
+      this.composer.setPixelRatio(r.getPixelRatio());
+      this.composer.setSize(w, h);
+      this.applyFrame();
+    });
   }
 
   /** Ponton, amarres, quais, phare, voisins, drapeaux. */
@@ -264,8 +301,16 @@ export class GarageView {
     this.glow = 2.2;
   }
 
+  private tuneTarget = { rake: 0, foil: 0, trim: 0, jib: 1 };
+  private tuneNow = { rake: 0, foil: 0, trim: 0, jib: 1 };
+
+  /** Les réglages se voient sur le bateau : quête du mât, foils, assiette, taille de la voile d'avant. */
+  applyTune(t: { rake: number; foil: number; trim: number }, sails: string) {
+    this.tuneTarget = { rake: t.rake, foil: t.foil, trim: t.trim, jib: sails === 'brise' ? 0.82 : sails === 'petittemps' ? 1.16 : 1 };
+  }
+
   setLook(look: BoatLook) {
-    const key = `${look.hull}.${look.foils}.${look.mast}.${look.color}.${look.name ?? ''}`;
+    const key = `${look.hull}.${look.foils}.${look.mast}.${look.color}.${look.name ?? ''}.${look.number ?? ''}.${look.accent ?? ''}.${look.pattern ?? ''}.${look.sail ?? ''}`;
     if (key === this.lookKey) return;
     this.lookKey = key;
     if (this.rig) {
@@ -312,8 +357,22 @@ export class GarageView {
     const lx = 0;
     const h0 = waveHeight(this.waves, lx, 0, t) * S;
     this.pivot.position.y = 0.04 + h0;
+    const tn = this.tuneNow;
+    const tg = this.tuneTarget;
+    const kk = Math.min(1, dt * 4);
+    tn.rake += (tg.rake - tn.rake) * kk;
+    tn.foil += (tg.foil - tn.foil) * kk;
+    tn.trim += (tg.trim - tn.trim) * kk;
+    tn.jib += (tg.jib - tn.jib) * kk;
     this.pivot.rotation.z = Math.sin(t * 0.7) * 0.012;
-    this.pivot.rotation.x = Math.sin(t * 0.5 + 1) * 0.006;
+    this.pivot.rotation.x = Math.sin(t * 0.5 + 1) * 0.006 + tn.trim * 0.03;
+    if (this.rig) {
+      this.rig.spar.rotation.x = tn.rake * 0.09;
+      const fs = 1 + tn.foil * 0.28;
+      for (const f of this.rig.foilParts) f.scale.set(fs, 1 + tn.foil * 0.18, 1);
+      this.rig.jib.scale.y = tn.jib;
+      this.rig.jib.scale.z = tn.jib;
+    }
     for (const n of this.neighbours) {
       n.rig.root.position.y = 0.04 + Math.sin(t * 0.8 + n.phase) * 0.02;
       n.rig.root.rotation.z = Math.sin(t * 0.6 + n.phase) * 0.015;
@@ -339,9 +398,9 @@ export class GarageView {
     }
     const r = this.engine.renderer;
     r.toneMapping = THREE.ACESFilmicToneMapping;
-    r.toneMappingExposure = 1.0;
+    r.toneMappingExposure = 1.05;
     r.shadowMap.enabled = true;
-    r.render(this.scene, this.camera);
+    this.composer.render(dt);
   }
 }
 

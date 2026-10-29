@@ -1,5 +1,5 @@
 import { RaceDef, raceById } from '../data/races';
-import { Setup, botSetup, calibrated, liveryOf, lookOf, perfOf } from '../data/garage';
+import { Setup, botSetup, calibrated, isLightColor, lookOf, perfOf, styleOf } from '../data/garage';
 import { genPerf, shortName } from '../data/fleet';
 import { Boat, BoatEvent, bestSail, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
 import { LonLat, Rng, dist } from './geo';
@@ -55,6 +55,8 @@ export interface SavedRace {
   setup: Setup;
   speed: string;
   savedAt: number;
+  /** heure réelle (ms UTC) du départ de cette course */
+  origin?: number;
 }
 
 export function makeBoat(o: Partial<Boat> & Pick<Boat, 'id' | 'name' | 'color' | 'perf' | 'route' | 'pos' | 'hdg'>): Boat {
@@ -101,19 +103,22 @@ export class Race {
   boats: Boat[];
   player: Boat;
   setup: Setup;
-  /** identifiant dans TIME_SCALES */
-  speed = '30m';
+  /** identifiant dans TIME_SCALES (mode test seulement : en jeu, tout est en temps réel) */
+  speed = 'live';
+  /** heure réelle (ms UTC) qui correspond à t = 0 : le vrai départ, ou le moment où tu as lancé l'entraînement */
+  readonly originUTC: number;
 
   constructor(def: RaceDef, setup: Setup, saved?: SavedRace) {
     this.def = def;
     this.setup = setup;
+    this.originUTC = saved?.origin ?? (def.fleet ? def.startUTC : Date.now());
     const grid = def.realWind ? windGrid() : null;
     this.wind = grid ? new GridWind(grid, def.startUTC, def.windPhase) : new SyntheticWind(def.windPhase);
     if (saved) {
       this.rng = new Rng(saved.seed);
       this.t = saved.t;
       this.boats = saved.boats.map((b) => migrateBoat(b));
-      this.speed = saved.speed ?? '30m';
+      this.speed = saved.speed ?? 'live';
     } else {
       this.rng = new Rng(Math.floor(Math.random() * 1e9));
       this.boats = this.createBoats(setup);
@@ -147,7 +152,8 @@ export class Race {
   private createBoats(setup: Setup): Boat[] {
     if (this.def.fleet) return this.createFleet(setup);
     const d = this.def;
-    const liv = liveryOf(setup.livery);
+    const st = styleOf(setup);
+    const liv = { color: st.color, dark: isLightColor(st.color) };
     const player = makeBoat({
       id: 'me',
       name: 'Toi',
@@ -187,7 +193,8 @@ export class Race {
   private createFleet(setup: Setup): Boat[] {
     const d = this.def;
     const fleet = d.fleet!;
-    const liv = liveryOf(setup.livery);
+    const st = styleOf(setup);
+    const liv = { color: st.color, dark: isLightColor(st.color) };
     // classement des options de route avec la météo du moment, pour un IMOCA neuf
     const times = routeTimes(d, genPerf('new'), this.wind);
     const order = times.map((t, i) => [t, i] as const).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
@@ -247,6 +254,11 @@ export class Race {
   nextMark(b: Boat) {
     const m = this.def.marks;
     return m && b.mark < m.length ? m[b.mark] : null;
+  }
+
+  /** Heures de course écoulées en temps réel (négatif avant le départ). */
+  realT(now = Date.now()): number {
+    return (now - this.originUTC) / 3600000;
   }
 
   get bots(): Boat[] {
@@ -367,6 +379,7 @@ export class Race {
       setup: this.setup,
       speed: this.speed,
       savedAt: Date.now(),
+      origin: this.originUTC,
     };
   }
 

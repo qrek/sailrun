@@ -4,6 +4,8 @@ import { Engine } from './render/engine';
 import { GarageView } from './render/garageView';
 import { WorldView } from './render/world';
 import { ImmersiveView } from './render/immersive';
+import { ChartView } from './render/chart';
+import { distUnit } from './ui/units';
 import { Boat, SAILS, SailId, changeSail, projectBoat, startRepair, startSleep, wakeUp } from './sim/boat';
 import { LonLat, norm180, norm360, smooth } from './sim/geo';
 import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
@@ -14,16 +16,17 @@ import { GarageUI, loadSetup } from './ui/garageUI';
 import { Hud, LayerId, ViewMode, cardinal } from './ui/hud';
 import { renderMenu } from './ui/menu';
 import { raceClock } from './ui/dom';
-import { showFinish, showIntro } from './ui/overlays';
+import { showFinish } from './ui/overlays';
 import { loadWindGrid, windGrid } from './sim/gfsWind';
 import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
 import { bearing, dist } from './sim/geo';
 import { fmtDist } from './ui/units';
 
 type Screen = 'menu' | 'garage' | 'race';
-const INTRO_KEY = 'sailgame.intro.v2';
 const LAYERS_KEY = 'sailgame.layers.v1';
 const PROJ_HOURS = 72;
+/** ?dev dans l'adresse : accélération du temps pour tester. Sinon tout est en temps réel. */
+const DEV = new URLSearchParams(location.search).has('dev');
 const FC_MAX = 120;
 const sailName = (id: SailId) => SAILS.find((s) => s.id === id)?.name ?? id;
 
@@ -43,6 +46,7 @@ export class Game {
   private world: WorldView;
   private garageView: GarageView;
   private immersive: ImmersiveView;
+  private chart: ChartView;
   private immersiveOn = false;
   private ui: HTMLElement;
   private screen: Screen = 'menu';
@@ -55,7 +59,6 @@ export class Game {
   private menuT = 0;
   private clock = 0;
   private last = performance.now();
-  private lastWall = Date.now();
   private routeClock = 0;
   private uiClock = 0;
   private saveClock = 0;
@@ -80,6 +83,20 @@ export class Game {
     this.world = new WorldView(this.engine, labels);
     this.garageView = new GarageView(this.engine);
     this.immersive = new ImmersiveView(this.engine, app);
+    this.chart = new ChartView(app);
+    this.chart.setUnit(distUnit());
+    this.chart.on('click', (ll) => {
+      if (ll && this.screen === 'race' && !this.immersiveOn) this.setProbe(ll);
+    });
+    this.chart.on('mousemove', (_ll, x, y) => {
+      this.pickAt = { x, y };
+      this.pickHide = 0;
+      if (this.race) this.updatePick(this.race.t + this.fcOffset);
+    });
+    this.chart.on('mouseout', () => {
+      this.pickAt = null;
+      this.hud?.showPick(0, 0, null);
+    });
     window.addEventListener('resize', () => this.garageUI?.layout());
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
@@ -102,6 +119,8 @@ export class Game {
     this.immersiveOn = false;
     this.immersive.setActive(false);
     this.screen = 'menu';
+    this.chart.setVisible(false);
+    this.chart.setProbe(null);
     this.world.setLayerVisible(true);
     this.race = null;
     this.hud = null;
@@ -134,6 +153,7 @@ export class Game {
 
   showGarage(def: RaceDef) {
     this.screen = 'garage';
+    this.chart.setVisible(false);
     this.world.setLayerVisible(false);
     this.engine.input = this.garageView.input();
     this.garageView.setRace(def.name);
@@ -148,27 +168,16 @@ export class Game {
     }
     clearRace();
     this.race = new Race(def, setup);
+    // course déjà partie (on arrive en retard) : les concurrents ont avancé, toi tu pars de la ligne maintenant
+    const late = this.race.realT();
+    if (late > 0.05 && !DEV) {
+      this.race.player.live = true;
+      this.race.step(late, () => {});
+      this.race.player.live = false;
+    }
     this.enterRace();
-    let seen = false;
-    try {
-      seen = localStorage.getItem(INTRO_KEY) === '1';
-    } catch {
-      /* rien */
-    }
-    if (!seen) {
-      this.paused = true;
-      showIntro(this.ui, def.name, () => {
-        try {
-          localStorage.setItem(INTRO_KEY, '1');
-        } catch {
-          /* rien */
-        }
-        this.paused = false;
-        this.departure(def);
-      });
-    } else {
-      this.departure(def);
-    }
+    if (late <= 0) this.hud?.say(null, `Direction de course : départ ${def.fleet ? 'à l’heure officielle' : 'dans un instant'}. Règle ton cap et ta voile.`, 'sys');
+    else this.departure(def);
     saveRace(this.race);
   }
 
@@ -194,12 +203,11 @@ export class Game {
     }
     this.race = Race.restore(saved);
     this.enterRace();
-    if (saved.speed === 'live') {
-      const hours = Math.min(24 * 30, (Date.now() - saved.savedAt) / 3600000);
-      if (hours > 0.05) {
-        this.race.step(hours, (e) => this.onRaceEvent(e, true));
-        this.hud?.say(null, `Pendant ton absence : ${hours < 1 ? Math.round(hours * 60) + ' min' : hours.toFixed(1).replace('.', ',') + ' h'} de course.`, 'sys');
-      }
+    // temps réel : la course a continué pendant ton absence
+    const hours = Math.min(24 * 30, this.race.realT() - this.race.t);
+    if (hours > 0.05 && !DEV) {
+      this.race.step(hours, (e) => this.onRaceEvent(e, true));
+      this.hud?.say(null, `Pendant ton absence : ${hours < 1 ? Math.round(hours * 60) + ' min' : hours < 48 ? hours.toFixed(1).replace('.', ',') + ' h' : Math.round(hours / 24) + ' jours'} de course.`, 'sys');
     } else {
       this.hud?.say(null, 'Course reprise.', 'sys');
     }
@@ -213,22 +221,21 @@ export class Game {
     this.garageUI = null;
     this.immersiveOn = false;
     this.immersive.setActive(false);
-    this.engine.input = this.world.input();
-    this.world.setLayerVisible(true);
-    this.world.setLabelsVisible(true);
-    this.world.setBoats(race.boats);
-    this.world.setFinish(race.def.finish, race.def.finishR, `ARRIVÉE · ${race.def.to.toUpperCase()}`);
-    this.world.setMarks(race.def.marks ?? [], race.player.mark);
-    this.world.view('reset');
-    this.world.snapCamera();
+    this.engine.input = null;
+    this.world.setLayerVisible(false);
+    this.world.setLabelsVisible(false);
+    this.chart.setVisible(true);
+    this.chart.setBoats(race.boats);
+    this.chart.setFinish(race.def.finish, `ARRIVÉE · ${race.def.to.toUpperCase()}`);
+    this.chart.setMarks(race.def.marks ?? [], race.player.mark);
     this.fcOffset = 0;
     this.fcPlay = false;
     this.fcDirty = true;
     this.projClock = 0;
-    this.world.windLayer = this.layers.wind;
-    this.world.setCloudsVisible(this.layers.clouds);
+    this.chart.windLayer = this.layers.wind;
     this.hud = new Hud(this.ui, {
       steer: (d) => this.steer(d),
+      map3d: (on) => this.chart.set3d(on),
       preview: (h) => {
         this.pendingHdg = h;
         this.projClock = Math.min(this.projClock, 0.05);
@@ -296,7 +303,8 @@ export class Game {
         this.fcPlay = false;
         this.fcDirty = true;
       },
-      units: () => {
+      units: (u) => {
+        this.chart.setUnit(u);
         this.hud?.update(race, this.day);
       },
       forecastPlay: () => {
@@ -306,8 +314,7 @@ export class Game {
       },
       layer: (id, on) => {
         this.layers[id] = on;
-        if (id === 'wind') this.world.windLayer = on;
-        else this.world.setCloudsVisible(on);
+        if (id === 'wind') this.chart.windLayer = on;
         try {
           localStorage.setItem(LAYERS_KEY, JSON.stringify(this.layers));
         } catch {
@@ -317,7 +324,6 @@ export class Game {
       speed: (id) => {
         race.speed = id;
         this.paused = false;
-        this.lastWall = Date.now();
         this.syncControls();
         saveRace(race);
       },
@@ -347,39 +353,37 @@ export class Game {
       }
     };
     this.routeClock = 0;
-    this.lastWall = Date.now();
+    this.hud.setDev(DEV);
     this.syncControls();
     this.hud.update(race, this.day);
   }
 
   private syncControls() {
-    if (this.race && this.hud) this.hud.setControls(this.race.speed, this.paused, this.world.is2d, this.immersiveOn);
+    if (this.race && this.hud) this.hud.setControls(this.race.speed, this.paused, true, this.immersiveOn);
   }
 
   /** Carte (2D / 3D) ou vue immersive au ras de l'eau. */
   private setView(m: ViewMode): void {
+    const p = this.race?.player;
     if (m === 'immersive') {
-      if (this.immersiveOn) {
-        this.setView('3d');
-        return;
-      }
+      if (this.immersiveOn) return this.setView('3d');
       this.immersiveOn = true;
       this.immersive.reset();
       this.immersive.setActive(true);
       this.engine.input = this.immersive.input();
-      this.world.setLayerVisible(false);
+      this.chart.setVisible(false);
       this.hud?.showPick(0, 0, null);
+      this.hud?.showProbe(0, 0, null);
     } else if (m === 'reset' && this.immersiveOn) {
       this.immersive.reset();
     } else {
       if (this.immersiveOn) {
         this.immersiveOn = false;
         this.immersive.setActive(false);
-        this.engine.input = this.world.input();
-        this.world.setLayerVisible(true);
-        this.world.snapCamera();
+        this.engine.input = null;
+        this.chart.setVisible(true);
       }
-      this.world.view(m);
+      if (m === 'reset' && p) this.chart.recenter(p.pos, 7);
     }
     this.syncControls();
   }
@@ -437,7 +441,7 @@ export class Game {
       this.setProbe(null);
     } else if (e.key === 'i' || e.key === 'I') {
       this.setView('immersive');
-    } else if (e.key === ' ' && e.target === document.body) {
+    } else if (DEV && e.key === ' ' && e.target === document.body) {
       this.paused = !this.paused;
       this.syncControls();
       e.preventDefault();
@@ -463,7 +467,7 @@ export class Game {
     }
     if (ev === 'mark') {
       const m = this.race?.def.marks?.[boat.mark - 1];
-      this.world.setMarks(this.race?.def.marks ?? [], boat.mark);
+      this.chart.setMarks(this.race?.def.marks ?? [], boat.mark);
       if (m && !quiet) {
         hud.say(null, `Marque passée : ${m.name}.`, 'sys');
         hud.toast(`${m.name} passé${boat.mark === this.race?.def.marks?.length ? ' — cap sur la ligne d’arrivée !' : ''}`);
@@ -502,14 +506,17 @@ export class Game {
     const race = this.race!;
     const p = race.player;
     const wall = Date.now();
-    if (!this.paused && !race.allFinished) {
-      const ts = timeScaleOf(race.speed);
-      // en temps réel on suit l'horloge murale, même si l'onglet a dormi
-      const hours = race.speed === 'live' ? (wall - this.lastWall) / 3600000 : dt * ts.hoursPerSecond;
-      race.step(hours, (e) => this.onRaceEvent(e));
+    if (!race.allFinished) {
+      if (DEV && race.speed !== 'live') {
+        if (!this.paused) race.step(dt * timeScaleOf(race.speed).hoursPerSecond, (e) => this.onRaceEvent(e));
+      } else {
+        // temps réel : la course suit l'horloge, même si l'onglet a dormi
+        const target = race.realT(wall);
+        if (target > race.t) race.step(Math.min(target - race.t, 24 * 30), (e) => this.onRaceEvent(e));
+      }
     }
-    this.lastWall = wall;
-
+    const pre = race.realT(wall);
+    this.hud?.setPrestart(pre < 0 && !DEV ? -pre * 3600000 : null);
     if (p.finished !== null && !this.finishShown) {
       this.finishShown = true;
       clearRace();
@@ -521,7 +528,7 @@ export class Game {
       );
     }
 
-    const sun = sunElevation(p.pos[0], p.pos[1], race.def.startUTC + race.t * 3600000);
+    const sun = sunElevation(p.pos[0], p.pos[1], race.originUTC + race.t * 3600000);
     this.day = smooth(-7, 6, sun);
 
     // prévisions : décalage dans le temps de la carte (vent, nuages, bateau fantôme)
@@ -546,9 +553,9 @@ export class Game {
           src = { ...p, auto: false, lock: twaMode ? 'twa' : 'hdg', hdg: this.pendingHdg, lockTwa: norm180(p.twd - this.pendingHdg) };
         }
         const pr = projectBoat(src, race.t, race.wind, PROJ_HOURS, race.def.finish, race.def.finishR, this.projSteer(src, race.wind), race.def.marks);
-        this.world.setProjection(pr.pts, pr.dt);
+        this.chart.setProjection(pr.pts, pr.dt);
       } else {
-        this.world.setProjection([], 0.5);
+        this.chart.setProjection([], 0.5);
       }
       this.fcDirty = true;
     }
@@ -557,7 +564,7 @@ export class Game {
     if (this.routeClock <= 0) {
       this.routeClock = 1.5;
       const rt = p.finished === null ? planRoute(p, race.t, race.wind, race.def.finish, race.def.finishR, 420, race.def.marks) : [];
-      this.world.setRoute(rt);
+      this.chart.setRoute(rt);
       const end = rt[rt.length - 1];
       this.hud?.setEta(end && dist(end, race.def.finish) < race.def.finishR + 1 ? rt.length - 1 : null);
     }
@@ -565,6 +572,7 @@ export class Game {
     if (this.uiClock <= 0) {
       this.uiClock = 0.25;
       this.hud?.update(race, this.day);
+      this.chart.updateBoats();
       this.updatePick(windT);
     }
     if (this.probe) {
@@ -582,11 +590,11 @@ export class Game {
     }
     if (this.immersiveOn) {
       // soleil : angle horaire à la position du bateau, ramené au cap
-      const hours = ((race.def.startUTC + race.t * 3600000) / 3600000) % 24;
+      const hours = ((race.originUTC + race.t * 3600000) / 3600000) % 24;
       const hourAngle = (hours + p.pos[0] / 15 - 12) * 15;
       this.immersive.frame(dt, p, race.boats, this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180);
     } else {
-      this.world.frame({ dt, time: this.clock, wind: race.wind, windT, focus: p.pos, day: this.day });
+      this.chart.frame({ wind: race.wind, windT, focus: p.pos }, dt);
     }
   }
 
@@ -606,16 +614,16 @@ export class Game {
   private updateForecastUI(race: Race) {
     const h = this.fcOffset;
     if (h < 0.5) {
-      this.world.setGhost(0, '');
+      this.chart.setGhost(0);
       this.hud?.setForecast(0, this.fcPlay, 'Prévisions', 'Glisse pour voir le vent des 5 prochains jours');
       return;
     }
     const t = race.t + h;
-    const label = `+${Math.round(h)} h · ${raceClock(race.def.startUTC, t)}`;
+    const label = `+${Math.round(h)} h · ${raceClock(race.originUTC, t)}`;
     let sub: string;
     if (race.player.finished === null && h <= PROJ_HOURS) {
-      this.world.setGhost(h, `+${Math.round(h)} h`);
-      const pr = this.world.ghostPos();
+      this.chart.setGhost(h);
+      const pr = this.chart.ghostPos(h);
       if (pr) {
         const w = race.wind.at(pr[0], pr[1], t);
         sub = `Là où tu seras (rond jaune) : ${Math.round(Math.hypot(w[0], w[1]))} nds de ${cardinal(windFrom(w[0], w[1]))}`;
@@ -623,7 +631,7 @@ export class Game {
         sub = 'Le rond jaune montre où tu seras';
       }
     } else {
-      this.world.setGhost(0, '');
+      this.chart.setGhost(0);
       sub = `Au-delà de ${PROJ_HOURS} h, on ne montre que le vent`;
     }
     this.hud?.setForecast(h, this.fcPlay, label, sub);
@@ -662,7 +670,7 @@ export class Game {
   private setProbe(ll: LonLat | null) {
     this.probe = ll;
     this.probeMarine = undefined;
-    this.world.setProbe(ll);
+    this.chart.setProbe(ll);
     if (!ll) {
       this.hud?.showProbe(0, 0, null);
       return;
@@ -679,13 +687,13 @@ export class Game {
     const race = this.race;
     const hud = this.hud;
     if (!race || !hud) return;
-    const sp = this.probe && !this.immersiveOn ? this.world.probeScreen() : null;
+    const sp = this.probe && !this.immersiveOn ? this.chart.probeScreen() : null;
     if (!this.probe || !sp) return hud.showProbe(0, 0, null);
     const [lon, lat] = this.probe;
     const w = race.wind.at(lon, lat, windT);
     const tws = Math.hypot(w[0], w[1]);
     const twd = windFrom(w[0], w[1]);
-    const utc = race.def.startUTC + windT * 3600000;
+    const utc = race.originUTC + windT * 3600000;
     const deg = (v: number) => `${String(Math.round(((v % 360) + 360) % 360)).padStart(3, '0')}°`;
     const dm = (v: number, pos: string, neg: string) => {
       const tm = Math.round(Math.abs(v) * 60);
@@ -714,7 +722,7 @@ export class Game {
       wave,
       from: `${fmtDist(dist(p.pos, this.probe), true)} · cap ${deg(brg)}`,
       twa: `${Math.round(Math.abs(twaThere))}° ${twaThere < 0 ? 'bâbord' : 'tribord'} en y allant`,
-      time: this.fcOffset >= 0.5 ? `Prévision à ${raceClock(race.def.startUTC, windT)} UTC` : `Maintenant · ${raceClock(race.def.startUTC, windT)} UTC`,
+      time: this.fcOffset >= 0.5 ? `Prévision à ${raceClock(race.originUTC, windT)} UTC` : `Maintenant · ${raceClock(race.originUTC, windT)} UTC`,
     });
   }
 
@@ -729,7 +737,7 @@ export class Game {
       hud.showPick(0, 0, null);
       return;
     }
-    const ll = this.world.pick(this.pickAt.x, this.pickAt.y);
+    const ll = this.chart.pick(this.pickAt.x, this.pickAt.y);
     if (!ll) {
       hud.showPick(0, 0, null);
       return;

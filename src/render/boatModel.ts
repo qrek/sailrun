@@ -12,6 +12,12 @@ export interface BoatLook {
   color: string;
   name?: string; // inscrit sur la coque et la grand-voile
   number?: string; // numéro de voile
+  /** couleur secondaire (filet, têtière) */
+  accent?: string;
+  /** motif de la coque */
+  pattern?: 'vague' | 'bande' | 'degrade' | 'uni' | 'eclair';
+  /** couleur des voiles */
+  sail?: 'carbone' | 'gris' | 'blanc';
 }
 
 export interface BoatRig {
@@ -22,6 +28,10 @@ export interface BoatRig {
   materials: THREE.Material[];
   /** matériaux de chaque équipement, pour la surbrillance au garage */
   parts: Record<'coque' | 'foils' | 'mat', THREE.MeshStandardMaterial[]>;
+  /** mât, gréement et voiles, articulés au pied de mât (quête) */
+  spar: THREE.Group;
+  /** foils (incidence) */
+  foilParts: THREE.Object3D[];
 }
 
 const MAST_H: Record<string, number> = { classique: 1.06, aile: 1.16, grand: 1.28 };
@@ -39,8 +49,8 @@ const isLight = (color: string) => {
  * Coque façon IMOCA moderne : blanc cassé, grande vague aux couleurs du bateau, œuvres vives sombres.
  * `starboard` : tribord, l'avant est à droite de la texture (u = 1) mais le texte reste lisible.
  */
-function hullTexture(color: string, name: string, starboard: boolean): THREE.CanvasTexture {
-  const key = `hull:${color}:${name}:${starboard}`;
+function hullTexture(color: string, name: string, starboard: boolean, pattern = 'vague', accent2 = '#FFFFFF'): THREE.CanvasTexture {
+  const key = `hull:${color}:${name}:${starboard}:${pattern}:${accent2}`;
   const hit = texCache.get(key);
   if (hit) return hit;
   const c = document.createElement('canvas');
@@ -48,7 +58,7 @@ function hullTexture(color: string, name: string, starboard: boolean): THREE.Can
   c.height = 256;
   const g = c.getContext('2d')!;
   // u = longueur (0 = étrave, 1 = tableau arrière), v = hauteur (0 = sous la coque, 1 = liston)
-  const accent = isLight(color) ? '#1B2530' : color;
+  const accent = isLight(color) && pattern !== 'uni' ? '#1B2530' : color;
   g.fillStyle = '#E8ECEF';
   g.fillRect(0, 0, 1024, 256);
   g.save();
@@ -56,31 +66,65 @@ function hullTexture(color: string, name: string, starboard: boolean): THREE.Can
     g.translate(1024, 0);
     g.scale(-1, 1);
   }
-  // grande vague de couleur qui part de l'étrave et file vers l'arrière
   g.fillStyle = accent;
-  g.beginPath();
-  g.moveTo(0, 256);
-  g.lineTo(0, 150);
-  g.bezierCurveTo(260, 150, 420, 40, 1024, 10);
-  g.lineTo(1024, 256);
-  g.closePath();
-  g.fill();
-  // filet clair qui accompagne la vague
-  g.strokeStyle = 'rgba(255,255,255,0.85)';
+  g.strokeStyle = accent2;
   g.lineWidth = 7;
-  g.beginPath();
-  g.moveTo(0, 134);
-  g.bezierCurveTo(260, 134, 420, 24, 1024, -6);
-  g.stroke();
+  if (pattern === 'uni') {
+    g.fillRect(0, 0, 1024, 256);
+    g.fillRect(0, 0, 1024, 14);
+    g.fillStyle = accent2;
+    g.fillRect(0, 12, 1024, 6);
+  } else if (pattern === 'bande') {
+    g.fillRect(0, 40, 1024, 70);
+    g.fillStyle = accent2;
+    g.fillRect(0, 118, 1024, 10);
+  } else if (pattern === 'degrade') {
+    const grd = g.createLinearGradient(0, 0, 1024, 0);
+    grd.addColorStop(0, accent);
+    grd.addColorStop(0.55, accent);
+    grd.addColorStop(1, 'rgba(232,236,239,0)');
+    g.fillStyle = grd;
+    g.fillRect(0, 0, 1024, 200);
+  } else if (pattern === 'eclair') {
+    g.beginPath();
+    g.moveTo(0, 190);
+    g.lineTo(0, 120);
+    g.lineTo(380, 60);
+    g.lineTo(330, 120);
+    g.lineTo(1024, 20);
+    g.lineTo(1024, 90);
+    g.lineTo(560, 150);
+    g.lineTo(610, 100);
+    g.closePath();
+    g.fill();
+    g.beginPath();
+    g.moveTo(0, 104);
+    g.lineTo(390, 44);
+    g.stroke();
+  } else {
+    // grande vague de couleur qui part de l'étrave et file vers l'arrière
+    g.beginPath();
+    g.moveTo(0, 256);
+    g.lineTo(0, 150);
+    g.bezierCurveTo(260, 150, 420, 40, 1024, 10);
+    g.lineTo(1024, 256);
+    g.closePath();
+    g.fill();
+    g.beginPath();
+    g.moveTo(0, 134);
+    g.bezierCurveTo(260, 134, 420, 24, 1024, -6);
+    g.stroke();
+  }
   // œuvres vives et flottaison
   g.fillStyle = '#14191F';
   g.fillRect(0, 196, 1024, 60);
-  g.fillStyle = '#F4F6F8';
+  g.fillStyle = accent2;
   g.fillRect(0, 190, 1024, 6);
   g.restore();
-  // nom sur l'avant, en blanc dans la vague
+  // nom sur l'avant
   g.font = 'italic 800 84px "Barlow Condensed", "Arial Narrow", sans-serif';
-  g.fillStyle = '#FFFFFF';
+  g.fillStyle = pattern === 'uni' || pattern === 'vague' || pattern === 'degrade' ? '#FFFFFF' : accent;
+  if (isLight(color) && pattern === 'uni') g.fillStyle = '#1B2530';
   g.textBaseline = 'middle';
   g.textAlign = starboard ? 'right' : 'left';
   g.fillText(name.toUpperCase(), starboard ? 1024 - 60 : 60, 168);
@@ -91,11 +135,14 @@ function hullTexture(color: string, name: string, starboard: boolean): THREE.Can
   return t;
 }
 
+const SAIL_CLOTH: Record<string, [string, string]> = { carbone: ['#22262C', '#16191E'], gris: ['#7a828b', '#5f666e'], blanc: ['#eef0ec', '#d9ddd8'] };
+let clothNow: [string, string] = SAIL_CLOTH.carbone;
+
 /** Membrane carbone : fond anthracite, coutures, lattes. */
 function carbonBase(g: CanvasRenderingContext2D, w: number, h: number) {
   const grd = g.createLinearGradient(0, 0, w, h);
-  grd.addColorStop(0, '#22262C');
-  grd.addColorStop(1, '#16191E');
+  grd.addColorStop(0, clothNow[0]);
+  grd.addColorStop(1, clothNow[1]);
   g.fillStyle = grd;
   g.fillRect(0, 0, w, h);
   g.strokeStyle = 'rgba(255,255,255,0.05)';
@@ -116,8 +163,8 @@ function carbonBase(g: CanvasRenderingContext2D, w: number, h: number) {
 }
 
 /** Grand-voile : carbone noir, nom en grand à la verticale, tête aux couleurs du bateau. */
-function sailTexture(color: string, name: string, number: string): THREE.CanvasTexture {
-  const key = `sail:${color}:${name}:${number}`;
+function sailTexture(color: string, name: string, number: string, cloth = 'carbone'): THREE.CanvasTexture {
+  const key = `sail:${color}:${name}:${number}:${cloth}`;
   const hit = texCache.get(key);
   if (hit) return hit;
   const c = document.createElement('canvas');
@@ -125,6 +172,7 @@ function sailTexture(color: string, name: string, number: string): THREE.CanvasT
   c.height = 1024;
   const g = c.getContext('2d')!;
   // u = distance au mât rapportée à la corde maxi, v = hauteur (0 = bordure, 1 = têtière)
+  clothNow = SAIL_CLOTH[cloth] ?? SAIL_CLOTH.carbone;
   carbonBase(g, 512, 1024);
   // tête de voile aux couleurs du bateau
   g.fillStyle = color;
@@ -151,7 +199,7 @@ function sailTexture(color: string, name: string, number: string): THREE.CanvasT
   g.rotate(-Math.PI / 2);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.fillStyle = '#FFFFFF';
+  g.fillStyle = cloth === 'blanc' ? color : '#FFFFFF';
   let size = 150;
   g.font = `800 ${size}px "Barlow Condensed", "Arial Narrow", sans-serif`;
   const label = name.toUpperCase();
@@ -174,14 +222,15 @@ function sailTexture(color: string, name: string, number: string): THREE.CanvasT
 }
 
 /** Voile d'avant : carbone noir, bas de voile aux couleurs du bateau. */
-function jibTexture(color: string): THREE.CanvasTexture {
-  const key = `jib:${color}`;
+function jibTexture(color: string, cloth = 'carbone'): THREE.CanvasTexture {
+  const key = `jib:${color}:${cloth}`;
   const hit = texCache.get(key);
   if (hit) return hit;
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 512;
   const g = c.getContext('2d')!;
+  clothNow = SAIL_CLOTH[cloth] ?? SAIL_CLOTH.carbone;
   carbonBase(g, 256, 512);
   g.fillStyle = isLight(color) ? '#DCE3E8' : color;
   g.beginPath();
@@ -628,8 +677,8 @@ export function buildBoat(look: BoatLook, hero = false): BoatRig {
   const name = look.name ?? 'SAIL RUN';
   const number = look.number ?? 'FRA 60';
 
-  const hullMat = new THREE.MeshPhysicalMaterial({ map: hullTexture(look.color, name, false), roughness: 0.32, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
-  const hullMatSb = new THREE.MeshPhysicalMaterial({ map: hullTexture(look.color, name, true), roughness: 0.32, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
+  const hullMat = new THREE.MeshPhysicalMaterial({ map: hullTexture(look.color, name, false, look.pattern, look.accent), roughness: 0.32, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
+  const hullMatSb = new THREE.MeshPhysicalMaterial({ map: hullTexture(look.color, name, true, look.pattern, look.accent), roughness: 0.32, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
   const deckMat = hero
     ? new THREE.MeshStandardMaterial({ color: 0x59626d, roughness: 0.92, map: nonSkidTexture(), bumpMap: nonSkidTexture(), bumpScale: 0.6 })
     : new THREE.MeshStandardMaterial({ color: 0x4a535e, roughness: 0.85 });
@@ -643,10 +692,10 @@ export function buildBoat(look: BoatLook, hero = false): BoatRig {
   const foilMat = carbon.clone();
   const mastMat = carbon.clone();
   const darkGlass = new THREE.MeshPhysicalMaterial({ color: 0x0b1118, roughness: 0.08, metalness: 0.3, clearcoat: 1 });
-  const sailTex = sailTexture(look.color, name, number);
+  const sailTex = sailTexture(look.accent && look.accent !== '#FFFFFF' ? look.accent : look.color, name, number, look.sail);
   const sailMat = new THREE.MeshStandardMaterial({ map: sailTex, roughness: 0.55, side: THREE.FrontSide });
   const sailBack = new THREE.MeshStandardMaterial({ map: mirrored(sailTex), roughness: 0.55, side: THREE.BackSide });
-  const jibMat = new THREE.MeshStandardMaterial({ map: jibTexture(look.color), roughness: 0.6, side: THREE.DoubleSide });
+  const jibMat = new THREE.MeshStandardMaterial({ map: jibTexture(look.color, look.sail), roughness: 0.6, side: THREE.DoubleSide });
   const rigMat = new THREE.LineBasicMaterial({ color: 0x2b3440, transparent: true, opacity: 0.85 });
   const accent = new THREE.MeshStandardMaterial({ color: look.color, roughness: 0.4 });
   const materials: THREE.Material[] = [foilMat, mastMat, hullMat, hullMatSb, sailBack, roofMat, deckMat, carbon, darkGlass, sailMat, jibMat, rigMat, accent, steel, blackAlu, cable];
@@ -736,6 +785,7 @@ export function buildBoat(look: BoatLook, hero = false): BoatRig {
   }
 
   // appendices
+  const f0 = heel.children.length;
   for (const side of [-1, 1]) {
     if (look.foils === 'derives') {
       const board = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.26, 0.045), foilMat);
@@ -749,9 +799,11 @@ export function buildBoat(look: BoatLook, hero = false): BoatRig {
     }
   }
 
+  const foilParts = heel.children.slice(f0);
   if (hero) addDeckGear(heel, look.hull, steel, blackAlu, carbon, deckMat, darkGlass);
 
   // mât
+  const s0 = heel.children.length;
   const mh = MAST_H[look.mast] ?? 1.16;
   const wing = look.mast !== 'classique';
   const mastShape = new THREE.Shape();
@@ -862,10 +914,19 @@ export function buildBoat(look: BoatLook, hero = false): BoatRig {
   const headZ = (mastZ - 0.01 + 0.6) * 0.92; // la têtière arrive presque au mât
   jib.add(sailMesh((v) => new THREE.Vector3(0, tackY + (jibHead - tackY) * v, headZ * v), (v) => 0.5 * (1 - v) + 0.02 * v, 0.13, jibMat, 0, undefined, false, hero, hero ? 0.26 : 0));
 
+  // mât, gréement et voiles : regroupés et articulés au pied de mât, pour la quête
+  const spar = new THREE.Group();
+  spar.position.set(0, 0.085, mastZ);
+  for (const o of heel.children.slice(s0)) {
+    o.position.sub(spar.position);
+    spar.add(o);
+  }
+  heel.add(spar);
+
   root.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) o.castShadow = true;
   });
-  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] } };
+  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] }, spar, foilParts };
 }
 
 /** Oriente voiles et gîte selon l'angle au vent (twa > 0 : vent de tribord). */

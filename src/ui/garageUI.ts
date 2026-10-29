@@ -1,4 +1,4 @@
-import { DEFAULT_SETUP, LIVERIES, NEUTRAL_TUNE, SKIPPERS, SLOTS, Setup, SlotId, TUNES, Tune, TuneId, estimatedHours, idealTune, likesOf, liveryOf, lookOf, partOf, perfDeltas, skipperOf } from '../data/garage';
+import { ACCENT_COLORS, CLOTHS, DEFAULT_SETUP, HULL_COLORS, NEUTRAL_TUNE, PATTERNS, styleOf, SKIPPERS, SLOTS, Setup, SlotId, TUNES, Tune, TuneId, estimatedHours, idealTune, likesOf, lookOf, partOf, perfDeltas, skipperOf } from '../data/garage';
 import { GEN_LABEL } from '../data/fleet';
 import { raceMix, raceWind, realEta } from '../sim/eta';
 import { RaceDef, raceDistance } from '../data/races';
@@ -85,7 +85,7 @@ export class GarageUI {
   }
 
   private tabLabel(t: Tab): string {
-    if (t === 'livree') return liveryOf(this.setup.livery).name;
+    if (t === 'livree') return styleOf(this.setup).name;
     if (t === 'reglages') return this.fitLabel();
     return partOf(t, this.setup.parts[t]).name;
   }
@@ -93,7 +93,7 @@ export class GarageUI {
   render() {
     const d = this.def;
     const isBoat = this.step === 'bateau';
-    const liv = liveryOf(this.setup.livery);
+    const st = styleOf(this.setup);
     const sk = skipperOf(this.setup.skipper);
     const tabs: Tab[] = ['reglages', 'coque', 'livree'];
     const label: Record<Tab, string> = { reglages: 'Réglages', coque: 'Voiles', foils: 'Foils', mat: 'Centrage', livree: 'Livrée' };
@@ -139,9 +139,9 @@ export class GarageUI {
         <aside class="gx-sheet" data-summary aria-label="Fiche technique"></aside>
 
         <div class="gx-plate" aria-hidden="true">
-          <i style="background: ${liv.color}"></i>
-          <span class="n">Sail Run</span>
-          <span class="num">FRA 1</span>
+          <i style="background: ${st.color}"></i>
+          <span class="n">${esc(st.name)}</span>
+          <span class="num">${esc(st.number)}</span>
           <span class="sk">${isBoat ? `IMOCA 60 · ${GEN_LABEL.new}` : `Préparation · ${esc(sk.name)}`}</span>
         </div>
 
@@ -160,9 +160,16 @@ export class GarageUI {
     if (isBoat) this.bindBoat();
     else this.bindSkipper();
     this.renderSummary(null);
-    this.view.setLook({ ...lookOf(this.setup), color: liv.color, name: 'Sail Run', number: 'FRA 1' });
+    this.applyLook();
     this.view.setFocus(isBoat ? (this.tab === 'coque' ? 'mat' : 'all') : 'skipper');
     this.layout();
+  }
+
+  /** Le bateau 3D suit la livrée et les réglages. */
+  private applyLook() {
+    const st = styleOf(this.setup);
+    this.view.setLook({ ...lookOf(this.setup), color: st.color, accent: st.accent, pattern: st.pattern, sail: st.sail, name: st.name, number: st.number });
+    this.view.applyTune({ ...NEUTRAL_TUNE, ...(this.setup.tune ?? {}) }, this.setup.parts.coque);
   }
 
   private go(step: Step) {
@@ -212,9 +219,37 @@ export class GarageUI {
       return;
     }
     if (this.tab === 'livree') {
-      box.innerHTML = `<p class="gx-note">Coque, têtière de grand-voile et ton étiquette sur la carte.</p>
-        <div class="gx-swatches">${LIVERIES.map((l) => `<button type="button" class="gx-swatch" data-liv="${l.id}" aria-pressed="${l.id === s.livery}" style="--c: ${l.color}"><i></i><span>${esc(l.name)}</span></button>`).join('')}</div>`;
-      box.querySelectorAll<HTMLButtonElement>('[data-liv]').forEach((b) => b.addEventListener('click', () => this.choose({ ...clone(s), livery: b.dataset.liv! }, false)));
+      const st = styleOf(s);
+      const sw = (attr: string, list: string[], cur: string) =>
+        `<div class="lv-sw">${list.map((c) => `<button type="button" class="lv-c" ${attr}="${c}" aria-pressed="${c.toLowerCase() === cur.toLowerCase()}" style="--c: ${c}" aria-label="${c}"></button>`).join('')}</div>`;
+      const chips = (attr: string, list: { id: string; name: string }[], cur: string) =>
+        `<div class="lv-chips">${list.map((x) => `<button type="button" ${attr}="${x.id}" aria-pressed="${x.id === cur}">${esc(x.name)}</button>`).join('')}</div>`;
+      box.innerHTML = `
+        <div class="lv">
+          <div class="lv-row"><span class="lv-l">Coque</span>${sw('data-hc', HULL_COLORS, st.color)}</div>
+          <div class="lv-row"><span class="lv-l">Motif</span>${chips('data-pat', PATTERNS, st.pattern)}</div>
+          <div class="lv-row"><span class="lv-l">Filet et têtière</span>${sw('data-ac', ACCENT_COLORS, st.accent)}</div>
+          <div class="lv-row"><span class="lv-l">Voiles</span>${chips('data-cl', CLOTHS, st.sail)}</div>
+          <div class="lv-row two">
+            <label><span class="lv-l">Nom du bateau</span><input type="text" maxlength="16" value="${esc(st.name)}" data-nm></label>
+            <label><span class="lv-l">Numéro</span><input type="text" maxlength="7" value="${esc(st.number)}" data-no></label>
+          </div>
+          <p class="gx-note">Purement esthétique : aucun effet sur la vitesse. La couleur de coque est aussi ton étiquette sur la carte.</p>
+        </div>`;
+      const upd = (patch: Record<string, string>, rerender = true) => {
+        this.setup = { ...clone(this.setup), style: { ...(this.setup.style ?? {}), ...patch } };
+        storeSetup(this.setup);
+        this.applyLook();
+        if (rerender) this.render();
+      };
+      box.querySelectorAll<HTMLButtonElement>('[data-hc]').forEach((b) => b.addEventListener('click', () => upd({ color: b.dataset.hc! })));
+      box.querySelectorAll<HTMLButtonElement>('[data-ac]').forEach((b) => b.addEventListener('click', () => upd({ accent: b.dataset.ac! })));
+      box.querySelectorAll<HTMLButtonElement>('[data-pat]').forEach((b) => b.addEventListener('click', () => upd({ pattern: b.dataset.pat! })));
+      box.querySelectorAll<HTMLButtonElement>('[data-cl]').forEach((b) => b.addEventListener('click', () => upd({ sail: b.dataset.cl! })));
+      const nm = q<HTMLInputElement>(box, '[data-nm]');
+      const no = q<HTMLInputElement>(box, '[data-no]');
+      nm.addEventListener('change', () => upd({ name: nm.value.trim() || 'Sail Run' }));
+      no.addEventListener('change', () => upd({ number: no.value.trim().toUpperCase() || 'FRA 1' }));
       return;
     }
     const slot = SLOTS.find((x) => x.id === this.tab)!;
@@ -300,7 +335,8 @@ export class GarageUI {
         row.querySelector('[data-tnv]')!.textContent = fmtClick(v);
         const slot = this.root.querySelector('[data-tab="reglages"] small');
         if (slot) slot.textContent = this.fitLabel();
-        this.view.setLook({ ...lookOf(this.setup), color: liveryOf(this.setup.livery).color, name: 'Sail Run', number: 'FRA 1' });
+        this.applyLook();
+        this.view.pulse();
         this.renderSummary(null);
       });
     });

@@ -27,6 +27,17 @@ Autres commandes :
 
 ## Ce qu'il y a dedans
 
+- **Temps réel, toujours** : la Route du Rhum suit le vrai calendrier (départ le 1er novembre 2026 à 13 h 02),
+  les entraînements partent au moment où tu les lances. Avant le départ, un compte à rebours ; en arrivant en retard,
+  tu pars de la ligne pendant que les autres ont déjà avancé. Pour tester vite : ajoute `?dev` à l'adresse,
+  l'accélération du temps réapparaît.
+- **Carte marine à l'échelle** (MapLibre) : imagerie NASA Blue Marble (terres et fonds marins), relief ombré et
+  3D légère (tuiles d'altitude AWS Terrain, mer ramenée à 0 m), vraies côtes OpenStreetMap en zoom fort
+  (tuiles OpenFreeMap), quadrillage des degrés, échelle en km ou milles, vent en traits qui filent.
+- **Interface épurée** : à l'écran, seulement la boussole (on tourne la couronne, la trajectoire s'affiche,
+  bouton OK juste en dessous) et le choix de voile. Le reste (prévisions, télémétrie, classement, skipper,
+  polaire, relief, vue immersive, options) est derrière la barre d'icônes à droite.
+
 - **Route du Rhum 2026, classe IMOCA** : départ au large de la pointe du Grouin le dimanche 1er novembre à 13 h 02,
   Cap Fréhel à laisser à bâbord, l'Atlantique, puis la côte sous le vent de Basse-Terre, la **bouée de Basse-Terre**
   et la ligne de Pointe-à-Pitre. Les marques s'affichent sur la carte ; l'arrivée ne compte qu'une fois les marques passées.
@@ -99,6 +110,8 @@ scripts/      calibration du garage et préparation des textures
 
 ## Données
 
+- Carte de course : NASA Blue Marble Shaded Relief + Bathymetry (GIBS, domaine public), tuiles vectorielles
+  OpenFreeMap / OpenMapTiles (© OpenStreetMap contributors, ODbL), altitudes AWS Terrain Tiles (Mapzen, SRTM, GEBCO).
 - Côtes : Natural Earth 1:50m (domaine public), via le paquet `world-atlas`.
 - Relief des terres : Natural Earth « shaded relief » (domaine public).
 - Profondeur de l'océan : déduite de l'image ETOPO1 de la NOAA (domaine public).
