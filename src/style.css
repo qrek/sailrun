@@ -1196,7 +1196,8 @@ button:focus-visible, input:focus-visible { outline-color: var(--accent); }
   .sailc .sail { height: 44px; padding: 0 6px; grid-template-columns: 24px 1fr; }
   .sailc .sail svg { width: 22px; height: 24px; }
   .vhf { bottom: calc(var(--bottom) + 330px); }
-  .chart .maplibregl-ctrl-bottom-left { bottom: calc(var(--bottom) + 318px); }
+  .chart .maplibregl-ctrl-bottom-left { bottom: calc(var(--bottom) + 318px); left: var(--gap); transform: none; }
+  .chart .maplibregl-ctrl-bottom-right { bottom: calc(var(--bottom) + 318px); right: 64px; }
 }
 
 /* éditeur de livrée */
@@ -1217,3 +1218,13 @@ button:focus-visible, input:focus-visible { outline-color: var(--accent); }
 .prestart { left: var(--gap); top: calc(var(--top) + 74px); transform: none; align-items: flex-start; text-align: left; padding: 8px 14px; }
 .prestart b { font-size: 24px; }
 .alert { top: calc(var(--top) + 150px); }
+
+/* carte : l'espace autour du globe */
+#app > .chart.maplibregl-map { background: radial-gradient(ellipse at 50% 42%, #1f5a93 0%, #0e3462 45%, #071a36 100%); }
+
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 90; max-width: min(560px, calc(100vw - 32px)); padding: 12px 18px; background: rgba(8, 20, 34, 0.92); color: #fff; font: 600 14px/1.4 var(--font, system-ui); border-left: 3px solid var(--accent, #3fe3c9); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); transition: opacity 0.5s; }
+.toast.out { opacity: 0; }
+
+/* notes du garage : lisibles sur la 3D */
+.gx-note { background: rgba(8, 20, 34, 0.82); color: #c9d6e2; padding: 8px 12px; margin: 0; border-left: 2px solid var(--accent, #3fe3c9); }
+.gx-left > .gx-note { top: auto; bottom: calc(100% + 6px); }

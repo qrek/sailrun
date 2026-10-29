@@ -32,7 +32,20 @@ export interface BoatRig {
   spar: THREE.Group;
   /** foils (incidence) */
   foilParts: THREE.Object3D[];
+  /** géométries partagées avec un modèle importé : ne pas les libérer */
+  shared?: boolean;
 }
+
+/** Constructeur alternatif (modèle GLB importé) ; renvoie null pour garder le modèle codé. */
+type CustomBuilder = (look: BoatLook, hero: boolean) => BoatRig | null;
+let custom: CustomBuilder | null = null;
+let customVersion = 0;
+export function setCustomBoat(f: CustomBuilder | null) {
+  custom = f;
+  customVersion++;
+}
+/** Change quand un modèle importé est chargé : les vues reconstruisent leurs bateaux. */
+export const boatModelVersion = () => customVersion;
 
 const MAST_H: Record<string, number> = { classique: 1.06, aile: 1.16, grand: 1.28 };
 
@@ -49,7 +62,7 @@ const isLight = (color: string) => {
  * Coque façon IMOCA moderne : blanc cassé, grande vague aux couleurs du bateau, œuvres vives sombres.
  * `starboard` : tribord, l'avant est à droite de la texture (u = 1) mais le texte reste lisible.
  */
-function hullTexture(color: string, name: string, starboard: boolean, pattern = 'vague', accent2 = '#FFFFFF'): THREE.CanvasTexture {
+export function hullTexture(color: string, name: string, starboard: boolean, pattern = 'vague', accent2 = '#FFFFFF'): THREE.CanvasTexture {
   const key = `hull:${color}:${name}:${starboard}:${pattern}:${accent2}`;
   const hit = texCache.get(key);
   if (hit) return hit;
@@ -57,77 +70,81 @@ function hullTexture(color: string, name: string, starboard: boolean, pattern = 
   c.width = 1024;
   c.height = 256;
   const g = c.getContext('2d')!;
-  // u = longueur (0 = étrave, 1 = tableau arrière), v = hauteur (0 = sous la coque, 1 = liston)
-  const accent = isLight(color) && pattern !== 'uni' ? '#1B2530' : color;
-  g.fillStyle = '#E8ECEF';
+  // u = longueur (0 = étrave, 1 = tableau arrière), v = hauteur (0 = sous la coque, 1 = liston).
+  // Haut du canevas = liston ; la flottaison tombe vers y ≈ 115 : tout ce qui se voit est dans la bande 0–115.
+  const WL = 114;
+  const light = isLight(color);
+  const ink = light ? '#1B2530' : '#FFFFFF';
+  g.fillStyle = pattern === 'bande' || pattern === 'eclair' ? (light ? '#1B2530' : '#EEF1F3') : color;
   g.fillRect(0, 0, 1024, 256);
   g.save();
   if (starboard) {
     g.translate(1024, 0);
     g.scale(-1, 1);
   }
-  g.fillStyle = accent;
+  g.fillStyle = color;
   g.strokeStyle = accent2;
-  g.lineWidth = 7;
-  if (pattern === 'uni') {
-    g.fillRect(0, 0, 1024, 256);
-    g.fillRect(0, 0, 1024, 14);
+  if (pattern === 'bande') {
+    // large bande de couleur à mi-franc-bord, filet en dessous
+    g.fillRect(0, 22, 1024, 56);
     g.fillStyle = accent2;
-    g.fillRect(0, 12, 1024, 6);
-  } else if (pattern === 'bande') {
-    g.fillRect(0, 40, 1024, 70);
-    g.fillStyle = accent2;
-    g.fillRect(0, 118, 1024, 10);
+    g.fillRect(0, 82, 1024, 7);
   } else if (pattern === 'degrade') {
+    // la couleur file de l'étrave vers l'arrière et s'éteint dans le blanc
     const grd = g.createLinearGradient(0, 0, 1024, 0);
-    grd.addColorStop(0, accent);
-    grd.addColorStop(0.55, accent);
-    grd.addColorStop(1, 'rgba(232,236,239,0)');
+    grd.addColorStop(0, light ? '#1B2530' : '#F4F6F8');
+    grd.addColorStop(0.18, light ? '#1B2530' : '#F4F6F8');
+    grd.addColorStop(0.62, 'rgba(244,246,248,0)');
     g.fillStyle = grd;
-    g.fillRect(0, 0, 1024, 200);
+    g.fillRect(0, 0, 1024, WL);
+    g.fillStyle = accent2;
+    g.fillRect(0, WL - 14, 1024, 5);
   } else if (pattern === 'eclair') {
     g.beginPath();
-    g.moveTo(0, 190);
-    g.lineTo(0, 120);
-    g.lineTo(380, 60);
-    g.lineTo(330, 120);
-    g.lineTo(1024, 20);
-    g.lineTo(1024, 90);
-    g.lineTo(560, 150);
-    g.lineTo(610, 100);
-    g.closePath();
-    g.fill();
-    g.beginPath();
     g.moveTo(0, 104);
-    g.lineTo(390, 44);
-    g.stroke();
-  } else {
-    // grande vague de couleur qui part de l'étrave et file vers l'arrière
-    g.beginPath();
-    g.moveTo(0, 256);
-    g.lineTo(0, 150);
-    g.bezierCurveTo(260, 150, 420, 40, 1024, 10);
-    g.lineTo(1024, 256);
+    g.lineTo(0, 64);
+    g.lineTo(400, 30);
+    g.lineTo(350, 62);
+    g.lineTo(1024, 8);
+    g.lineTo(1024, 52);
+    g.lineTo(580, 84);
+    g.lineTo(630, 54);
     g.closePath();
     g.fill();
+    g.lineWidth = 5;
     g.beginPath();
-    g.moveTo(0, 134);
-    g.bezierCurveTo(260, 134, 420, 24, 1024, -6);
+    g.moveTo(0, 56);
+    g.lineTo(410, 22);
+    g.stroke();
+  } else if (pattern === 'vague') {
+    // coque pleine couleur, grand coup de pinceau clair de l'étrave basse vers l'arrière haut
+    g.lineCap = 'round';
+    g.lineWidth = 16;
+    g.beginPath();
+    g.moveTo(-20, 98);
+    g.bezierCurveTo(260, 96, 520, 40, 1044, 22);
+    g.stroke();
+    g.lineWidth = 5;
+    g.beginPath();
+    g.moveTo(-20, 80);
+    g.bezierCurveTo(260, 78, 520, 24, 1044, 6);
     g.stroke();
   }
-  // œuvres vives et flottaison
-  g.fillStyle = '#14191F';
-  g.fillRect(0, 196, 1024, 60);
+  // liston : filet clair sous le pont
   g.fillStyle = accent2;
-  g.fillRect(0, 190, 1024, 6);
+  g.fillRect(0, 0, 1024, 4);
+  // flottaison et œuvres vives
+  g.fillStyle = '#12161B';
+  g.fillRect(0, WL + 4, 1024, 256 - WL - 4);
+  g.fillStyle = accent2;
+  g.fillRect(0, WL, 1024, 4);
   g.restore();
-  // nom sur l'avant
-  g.font = 'italic 800 84px "Barlow Condensed", "Arial Narrow", sans-serif';
-  g.fillStyle = pattern === 'uni' || pattern === 'vague' || pattern === 'degrade' ? '#FFFFFF' : accent;
-  if (isLight(color) && pattern === 'uni') g.fillStyle = '#1B2530';
+  // nom sur l'avant, en grand dans le franc-bord
+  g.font = 'italic 800 70px "Barlow Condensed", "Arial Narrow", sans-serif';
+  g.fillStyle = pattern === 'bande' ? ink : pattern === 'eclair' ? (light ? '#FFFFFF' : '#1B2530') : pattern === 'degrade' ? (light ? '#FFFFFF' : color) : ink;
   g.textBaseline = 'middle';
   g.textAlign = starboard ? 'right' : 'left';
-  g.fillText(name.toUpperCase(), starboard ? 1024 - 60 : 60, 168);
+  g.fillText(name.toUpperCase(), starboard ? 1024 - 70 : 70, pattern === 'bande' ? 50 : 56);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
@@ -135,7 +152,7 @@ function hullTexture(color: string, name: string, starboard: boolean, pattern = 
   return t;
 }
 
-const SAIL_CLOTH: Record<string, [string, string]> = { carbone: ['#22262C', '#16191E'], gris: ['#7a828b', '#5f666e'], blanc: ['#eef0ec', '#d9ddd8'] };
+export const SAIL_CLOTH: Record<string, [string, string]> = { carbone: ['#22262C', '#16191E'], gris: ['#7a828b', '#5f666e'], blanc: ['#eef0ec', '#d9ddd8'] };
 let clothNow: [string, string] = SAIL_CLOTH.carbone;
 
 /** Membrane carbone : fond anthracite, coutures, lattes. */
@@ -163,7 +180,7 @@ function carbonBase(g: CanvasRenderingContext2D, w: number, h: number) {
 }
 
 /** Grand-voile : carbone noir, nom en grand à la verticale, tête aux couleurs du bateau. */
-function sailTexture(color: string, name: string, number: string, cloth = 'carbone'): THREE.CanvasTexture {
+export function sailTexture(color: string, name: string, number: string, cloth = 'carbone'): THREE.CanvasTexture {
   const key = `sail:${color}:${name}:${number}:${cloth}`;
   const hit = texCache.get(key);
   if (hit) return hit;
@@ -222,7 +239,7 @@ function sailTexture(color: string, name: string, number: string, cloth = 'carbo
 }
 
 /** Voile d'avant : carbone noir, bas de voile aux couleurs du bateau. */
-function jibTexture(color: string, cloth = 'carbone'): THREE.CanvasTexture {
+export function jibTexture(color: string, cloth = 'carbone'): THREE.CanvasTexture {
   const key = `jib:${color}:${cloth}`;
   const hit = texCache.get(key);
   if (hit) return hit;
@@ -254,7 +271,7 @@ function jibTexture(color: string, cloth = 'carbone'): THREE.CanvasTexture {
 }
 
 /** Copie miroir horizontale d'une texture de canvas (pour l'autre bord). */
-function mirrored(t: THREE.CanvasTexture): THREE.CanvasTexture {
+export function mirrored(t: THREE.CanvasTexture): THREE.CanvasTexture {
   const key = `mirror:${t.uuid}`;
   const hit = texCache.get(key);
   if (hit) return hit;
@@ -670,7 +687,11 @@ function lineSegs(pts: number[], mat: THREE.LineBasicMaterial): THREE.LineSegmen
   return new THREE.LineSegments(g, mat);
 }
 
-export function buildBoat(look: BoatLook, hero = false): BoatRig {
+export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): BoatRig {
+  if (allowCustom && custom) {
+    const r = custom(look, hero);
+    if (r) return r;
+  }
   const root = new THREE.Group();
   const heel = new THREE.Group();
   root.add(heel);
@@ -942,7 +963,7 @@ export function trimBoat(rig: BoatRig, twa: number, tws: number) {
 }
 
 export function disposeBoat(rig: BoatRig) {
-  rig.root.traverse((o) => {
+  if (!rig.shared) rig.root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (m.geometry) m.geometry.dispose();
   });

@@ -121,6 +121,10 @@ scripts/      calibration du garage et préparation des textures
 - Les images viennent du paquet Python `basemap-data` ; `scripts/build_terrain.py` les découpe et
   `scripts/build_hexes.py` en tire les couleurs des continents et l'emplacement des montagnes, collines et forêts.
 
+## Modèle 3D du bateau
+
+Le bateau est codé (`src/render/boatModel.ts`), mais un modèle fait sous Blender ou Meshy le remplace dès qu'il est déposé dans `public/models/imoca.glb`. Glisser un `.glb` sur la page permet de l'essayer sans le publier. Noms des pièces, pivots, matériaux de livrée, UV et réglages d'export : voir [docs/MODELE-IMOCA.md](docs/MODELE-IMOCA.md). `npx tsx scripts/make_test_glb.ts` fabrique un gabarit conforme.
+
 ## Positions en direct
 
 Le jeu sait recaler les concurrents sur leurs positions officielles (`src/sim/live.ts`) : il attend un JSON

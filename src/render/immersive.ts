@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Boat } from '../sim/boat';
 import { D2R, NM_PER_DEG } from '../sim/geo';
-import { BoatRig, buildBoat, disposeBoat, trimBoat } from './boatModel';
+import { BoatRig, boatModelVersion, buildBoat, disposeBoat, trimBoat } from './boatModel';
 import { Engine, InputHandler } from './engine';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -460,7 +460,7 @@ export class ImmersiveView {
   }
 
   private setPlayer(b: Boat) {
-    const key = `${b.hull}.${b.foils}.${b.mast}.${b.color}`;
+    const key = `${b.hull}.${b.foils}.${b.mast}.${b.color}.${boatModelVersion()}`;
     if (key === this.lookKey && this.rig) return;
     this.lookKey = key;
     if (this.rig) {
@@ -639,7 +639,7 @@ export class ImmersiveView {
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.toneMappingExposure = 1.0;
     r.shadowMap.enabled = false;
-    this.bloom.strength = 0.25 + 0.3 * day;
+    this.bloom.strength = 0.08 + 0.12 * day; // juste l’éclat du soleil sur l’eau, pas de halo général
     this.lens.uniforms.uTime.value = T;
     this.composer.render(dt);
   }

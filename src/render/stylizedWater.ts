@@ -14,8 +14,8 @@ export function stylizedWaterMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uTime: { value: 0 },
       uSunDir: { value: new THREE.Vector3(-0.55, 0.32, -0.77).normalize() },
-      uDeep: { value: new THREE.Color(0x0b2f57) },
-      uMid: { value: new THREE.Color(0x1a5a93) },
+      uDeep: { value: new THREE.Color(0x0a2d5a) },
+      uMid: { value: new THREE.Color(0x15589c) },
       uSky: { value: new THREE.Color(0x9cc8ea) },
       uFoam: { value: foam },
       uFoamN: { value: 0 },
@@ -60,11 +60,11 @@ export function stylizedWaterMaterial(): THREE.ShaderMaterial {
         float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
         // bleu océan : profond sous la caméra, plus clair et ciel au loin
         vec3 col = mix(uDeep, uMid, smoothstep(-0.2, 0.6, h0 - 0.6) * 0.6 + 0.25);
-        col = mix(col, uSky, clamp(fres * 0.7, 0.0, 0.5));
+        col = mix(col, uSky, clamp(fres * 0.5, 0.0, 0.32));
         // traits d'écume qui dérivent (étirés dans le sens du vent)
         vec2 sp = vec2(p.x * 1.6 + p.y * 0.5, p.y * 6.0 - p.x * 1.2) + vec2(t * 0.25, t * 0.08);
         float streak = smoothstep(0.82, 0.9, noise(sp * 2.2)) * smoothstep(0.4, 0.65, noise(p * 0.5 + t * 0.03));
-        col = mix(col, vec3(0.93, 0.97, 1.0), streak * 0.45 * near);
+        col = mix(col, vec3(0.93, 0.97, 1.0), streak * 0.28 * near);
         // anneaux d'écume autour des coques et des piles
         float foam = 0.0;
         for (int i = 0; i < ${MAX_FOAM}; i++) {

@@ -61,39 +61,67 @@ function seaLevelDem() {
   });
 }
 
+/** Repères de la course : quelques ports et archipels, pas de villes ni de routes. */
+const PLACES: [string, number, number, number][] = [
+  ['Saint-Malo', -2.02, 48.65, 1],
+  ['Brest', -4.49, 48.39, 0],
+  ['La Corogne', -8.41, 43.37, 0],
+  ['Lisbonne', -9.14, 38.72, 0],
+  ['Madère', -16.95, 32.75, 1],
+  ['Açores', -27.2, 38.6, 1],
+  ['Canaries', -15.6, 28.2, 1],
+  ['Cap-Vert', -23.6, 15.6, 1],
+  ['Bermudes', -64.75, 32.3, 1],
+  ['Antigua', -61.8, 17.07, 0],
+  ['Guadeloupe', -61.55, 16.25, 1],
+  ['Martinique', -61.0, 14.6, 0],
+];
+function placesFC(): FeatureCollection {
+  return { type: 'FeatureCollection', features: PLACES.map(([name, lon, lat, big]) => ({ type: 'Feature', properties: { name, big }, geometry: { type: 'Point', coordinates: [lon, lat] } })) };
+}
+
+/**
+ * Carte « jeu de voile » : l'océan et les terres sont peints à partir des vraies altitudes et profondeurs
+ * (dégradés francs façon atlas illustré), relief ombré stylisé, côtes dessinées avec un liseré d'écume,
+ * noms des océans et quelques repères seulement. Globe quand on dézoome, à plat quand on zoome.
+ */
 function style(): StyleSpecification {
-  const label = ['coalesce', ['get', 'name:fr'], ['get', 'name:latin'], ['get', 'name']] as unknown as string;
   return {
     version: 8,
     glyphs: `${OFM}/fonts/{fontstack}/{range}.pbf`,
+    projection: { type: 'globe' },
     sources: {
-      // NASA Blue Marble : relief ombré des terres et des fonds marins (domaine public)
-      bm: {
-        type: 'raster',
-        tiles: ['https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg'],
-        tileSize: 256,
-        maxzoom: 8,
-        attribution: 'NASA Blue Marble',
-      },
-      dem: { type: 'raster-dem', tiles: ['seadem://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 11, encoding: 'terrarium', attribution: 'Mapzen, SRTM, GEBCO' },
+      // altitudes et profondeurs réelles (terrarium : AWS Open Data, Mapzen/SRTM/GEBCO)
+      depth: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 10, encoding: 'terrarium', attribution: 'Mapzen, SRTM, GEBCO' },
+      // même source, fonds marins ramenés à 0 m : seule la terre prend du relief en 3D
+      dem: { type: 'raster-dem', tiles: ['seadem://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 10, encoding: 'terrarium' },
       omt: { type: 'vector', url: `${OFM}/planet`, attribution: '© OpenMapTiles © OpenStreetMap' },
       grat: { type: 'geojson', data: graticule() },
+      places: { type: 'geojson', data: placesFC() },
     },
-    sky: { 'sky-color': '#7fb6e6', 'horizon-color': '#d6e8f5', 'fog-color': '#c9dcea', 'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.85 },
+    sky: { 'sky-color': '#8fc4ef', 'horizon-color': '#e4f1fb', 'fog-color': '#d3e7f6', 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.7, 'fog-ground-blend': 0.9, 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 1, 1, 5, 0.6, 7, 0] },
     layers: [
-      { id: 'bg', type: 'background', paint: { 'background-color': '#123d66' } },
-      { id: 'bm', type: 'raster', source: 'bm', paint: { 'raster-saturation': 0.12, 'raster-contrast': 0.08, 'raster-resampling': 'linear', 'raster-fade-duration': 150 } },
-      // en zoom fort, l'image satellite devient floue : on reprend la main avec les vraies côtes
-      { id: 'wood', type: 'fill', source: 'omt', 'source-layer': 'landcover', minzoom: 7, filter: ['==', ['get', 'class'], 'wood'], paint: { 'fill-color': '#3f6b34', 'fill-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0, 9, 0.45] } },
-      { id: 'urban', type: 'fill', source: 'omt', 'source-layer': 'landuse', minzoom: 8, filter: ['match', ['get', 'class'], ['residential', 'commercial', 'industrial'], true, false], paint: { 'fill-color': '#b9b0a0', 'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 10, 0.5] } },
-      { id: 'water', type: 'fill', source: 'omt', 'source-layer': 'water', minzoom: 8, paint: { 'fill-color': '#1f5594', 'fill-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 10, 0.85] } },
-      { id: 'hills', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 0.45, 'hillshade-shadow-color': '#1b2a20', 'hillshade-highlight-color': '#fff8e6', 'hillshade-accent-color': '#2a3a2a' } },
-      { id: 'coast', type: 'line', source: 'omt', 'source-layer': 'water', minzoom: 5, paint: { 'line-color': '#f2f7f2', 'line-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.15, 10, 0.55], 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 0.4, 11, 1.2] } },
-      { id: 'grat', type: 'line', source: 'grat', paint: { 'line-color': '#ffffff', 'line-opacity': ['case', ['get', 'major'], 0.12, 0.06], 'line-width': 0.8 } },
-      { id: 'borders', type: 'line', source: 'omt', 'source-layer': 'boundary', filter: ['==', ['get', 'admin_level'], 2], paint: { 'line-color': '#ffffff', 'line-opacity': 0.35, 'line-dasharray': [3, 2], 'line-width': 0.7 } },
-      { id: 'sea-names', type: 'symbol', source: 'omt', 'source-layer': 'water_name', layout: { 'text-field': label, 'text-font': ['Noto Sans Italic'], 'text-size': ['interpolate', ['linear'], ['zoom'], 2, 11, 8, 15], 'text-letter-spacing': 0.25, 'text-max-width': 8 }, paint: { 'text-color': '#cfe6f7', 'text-halo-color': 'rgba(6,30,52,0.6)', 'text-halo-width': 1 } },
-      { id: 'countries', type: 'symbol', source: 'omt', 'source-layer': 'place', maxzoom: 7, filter: ['==', ['get', 'class'], 'country'], layout: { 'text-field': label, 'text-font': ['Noto Sans Bold'], 'text-size': ['interpolate', ['linear'], ['zoom'], 2, 11, 6, 16], 'text-letter-spacing': 0.06 }, paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(10,30,20,0.55)', 'text-halo-width': 1.2 } },
-      { id: 'towns', type: 'symbol', source: 'omt', 'source-layer': 'place', minzoom: 5, filter: ['match', ['get', 'class'], ['city', 'town'], true, false], layout: { 'text-field': label, 'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 5, 10, 10, 14], 'symbol-sort-key': ['get', 'rank'] }, paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(10,25,20,0.7)', 'text-halo-width': 1.2 } },
+      { id: 'bg', type: 'background', paint: { 'background-color': '#1a6fb8' } },
+      {
+        id: 'paint',
+        type: 'color-relief',
+        source: 'depth',
+        paint: {
+          'color-relief-color': [
+            'interpolate', ['linear'], ['elevation'],
+            -7000, '#0b2f6b', -5000, '#0f3f86', -3500, '#13509d', -2000, '#1765b3', -800, '#1d78c0', -200, '#248bcb', -60, '#2f9dd2', -15, '#4fb6dc', -0.5, '#86d3e4',
+            0, '#efe1b0', 15, '#b9d886', 120, '#8cc265', 400, '#73ab52', 900, '#86a253', 1500, '#b39c66', 2300, '#cbb390', 3200, '#e8e1d4', 4200, '#ffffff',
+          ],
+        },
+      },
+      { id: 'shade', type: 'hillshade', source: 'depth', paint: { 'hillshade-exaggeration': 0.55, 'hillshade-shadow-color': '#163a5c', 'hillshade-highlight-color': '#fffaf0', 'hillshade-accent-color': '#244a5a', 'hillshade-illumination-anchor': 'map' } },
+      // côtes dessinées : liseré d'écume flou puis trait blanc net
+      { id: 'surf', type: 'line', source: 'omt', 'source-layer': 'water', filter: ['==', ['get', 'class'], 'ocean'], paint: { 'line-color': '#c8f3f4', 'line-opacity': 0.55, 'line-width': ['interpolate', ['linear'], ['zoom'], 2, 1.5, 8, 7, 12, 14], 'line-blur': ['interpolate', ['linear'], ['zoom'], 2, 1, 8, 5, 12, 9] } },
+      { id: 'coast', type: 'line', source: 'omt', 'source-layer': 'water', filter: ['==', ['get', 'class'], 'ocean'], paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': ['interpolate', ['linear'], ['zoom'], 2, 0.5, 8, 1.4, 12, 2.2] } },
+      { id: 'grat', type: 'line', source: 'grat', paint: { 'line-color': '#ffffff', 'line-opacity': ['case', ['get', 'major'], 0.13, 0.06], 'line-width': 0.8, 'line-dasharray': [4, 3] } },
+      { id: 'sea-names', type: 'symbol', source: 'omt', 'source-layer': 'water_name', filter: ['match', ['get', 'class'], ['ocean', 'sea', 'bay'], true, false], layout: { 'text-field': ['upcase', ['coalesce', ['get', 'name:fr'], ['get', 'name']]], 'text-font': ['Noto Sans Italic'], 'text-size': ['interpolate', ['linear'], ['zoom'], 2, 12, 8, 18], 'text-letter-spacing': 0.35, 'text-max-width': 9 }, paint: { 'text-color': 'rgba(255,255,255,0.72)', 'text-halo-color': 'rgba(10,50,100,0.35)', 'text-halo-width': 1 } },
+      { id: 'place-dot', type: 'circle', source: 'places', paint: { 'circle-radius': 3, 'circle-color': '#ffffff', 'circle-stroke-color': '#16426e', 'circle-stroke-width': 1.5 } },
+      { id: 'place-name', type: 'symbol', source: 'places', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Bold'], 'text-size': ['case', ['==', ['get', 'big'], 1], 13, 11.5], 'text-offset': [0, 1.1], 'text-anchor': 'top', 'text-letter-spacing': 0.04 }, paint: { 'text-color': '#ffffff', 'text-halo-color': 'rgba(20,55,40,0.75)', 'text-halo-width': 1.6 } },
     ],
   };
 }
@@ -156,7 +184,7 @@ export class ChartView {
       minZoom: 2,
       maxZoom: 12,
       maxPitch: 60,
-      pitch: 35,
+      pitch: 25,
       attributionControl: { compact: true },
       dragRotate: false,
       renderWorldCopies: false,
@@ -181,19 +209,19 @@ export class ChartView {
   /** 3D légère : carte inclinée, montagnes en relief (la mer reste plate). */
   set3d(on: boolean) {
     this.whenReady(() => {
-      this.map.setTerrain(on ? { source: 'dem', exaggeration: 2.2 } : null);
-      this.map.easeTo({ pitch: on ? 35 : 0, duration: 700 });
+      this.map.setTerrain(on ? { source: 'dem', exaggeration: 1.8 } : null);
+      this.map.easeTo({ pitch: on ? 25 : 0, duration: 700 });
     });
   }
 
   private setup() {
     const m = this.map;
-    m.setTerrain({ source: 'dem', exaggeration: 2.2 });
+    m.setTerrain({ source: 'dem', exaggeration: 1.8 });
     m.addImage('boat', boatIcon(), { sdf: true });
     const src = (id: string) => m.addSource(id, { type: 'geojson', data: EMPTY });
     for (const id of ['tracks', 'route', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
     m.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#ffd84d', 'line-width': 1.6, 'line-opacity': 0.75, 'line-dasharray': [2, 2] } });
-    m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 2.2, 1.1], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.5] } });
+    m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 3, 1.6], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.7] } });
     m.addLayer({ id: 'proj', type: 'line', source: 'proj', paint: { 'line-color': '#ffffff', 'line-width': 1.6, 'line-dasharray': [1, 1.5], 'line-opacity': 0.9 } });
     m.addLayer({ id: 'projpts', type: 'circle', source: 'projpts', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff', 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
     m.addLayer({ id: 'projlbl', type: 'symbol', source: 'projpts', layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, -1.1], 'text-allow-overlap': true }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#0c2c48', 'text-halo-width': 1.5 } });
@@ -202,26 +230,27 @@ export class ChartView {
     m.addLayer({ id: 'marks', type: 'circle', source: 'marks', paint: { 'circle-radius': 6, 'circle-color': ['case', ['get', 'next'], '#3fe3c9', '#ff8a3d'], 'circle-stroke-color': '#06111a', 'circle-stroke-width': 2, 'circle-opacity': ['case', ['get', 'done'], 0.3, 1] } });
     m.addLayer({ id: 'markslbl', type: 'symbol', source: 'marks', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, 1.3], 'text-letter-spacing': 0.08, 'text-allow-overlap': true }, paint: { 'text-color': ['case', ['get', 'next'], '#3fe3c9', '#ffb37a'], 'text-halo-color': '#06111a', 'text-halo-width': 1.5 } });
     m.addLayer({ id: 'ghost', type: 'circle', source: 'ghost', paint: { 'circle-radius': 7, 'circle-color': 'rgba(255,216,77,0.25)', 'circle-stroke-color': '#ffd84d', 'circle-stroke-width': 2 } });
+    m.addLayer({ id: 'me-halo', type: 'circle', source: 'boats', filter: ['==', ['get', 'me'], true], paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.12)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2, 'circle-pitch-alignment': 'map' } });
     m.addLayer({
       id: 'boats',
       type: 'symbol',
       source: 'boats',
       layout: {
         'icon-image': 'boat',
-        'icon-size': ['case', ['get', 'me'], 0.85, 0.55],
+        'icon-size': ['case', ['get', 'me'], 0.8, 0.6],
         'icon-rotate': ['get', 'hdg'],
         'icon-rotation-alignment': 'map',
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
-        'symbol-sort-key': ['case', ['get', 'me'], 1000, 0],
+        // clé basse = placée en premier : l'étiquette du joueur passe toujours
+        'symbol-sort-key': ['case', ['get', 'me'], 0, 1],
         'text-field': ['get', 'label'],
         'text-font': ['Noto Sans Bold'],
         'text-size': ['case', ['get', 'me'], 13, 10.5],
         'text-offset': [0, 1.5],
         'text-optional': true,
-        'text-allow-overlap': ['get', 'me'],
       },
-      paint: { 'icon-color': ['get', 'color'], 'icon-halo-color': '#06111a', 'icon-halo-width': 1.2, 'text-color': ['case', ['get', 'me'], '#ffffff', '#c4dadf'], 'text-halo-color': '#06111a', 'text-halo-width': 1.4 },
+      paint: { 'icon-color': ['get', 'color'], 'icon-halo-color': '#ffffff', 'icon-halo-width': 1.6, 'text-color': ['case', ['get', 'me'], '#ffffff', '#e6f2fa'], 'text-halo-color': 'rgba(8,36,66,0.85)', 'text-halo-width': 1.6 },
     });
     this.ready = true;
     for (const f of this.onReady) f();
@@ -390,11 +419,11 @@ export class ChartView {
       if (!this.windLayer) ctx.clearRect(0, 0, W, H);
       return;
     }
-    const n = Math.round(Math.min(2400, (this.el.clientWidth * this.el.clientHeight) / 600));
+    const n = Math.round(Math.min(1500, (this.el.clientWidth * this.el.clientHeight) / 950));
     while (this.particles.length < n) this.particles.push(this.spawn());
     // déplacement à l'écran : proportionnel à la force du vent, indépendant du zoom
     const pxPerKnot = 0.55 * dpr * Math.min(2, dt * 60);
-    ctx.lineWidth = 1.1 * dpr;
+    ctx.lineWidth = 1.3 * dpr;
     ctx.lineCap = 'round';
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
@@ -413,7 +442,7 @@ export class ChartView {
         this.particles[i] = this.spawn();
         continue;
       }
-      const alpha = (0.25 + Math.min(1, s / 20) * 0.65) * Math.min(1, p.age / 8) * Math.min(1, (p.life - p.age) / 10);
+      const alpha = (0.14 + Math.min(1, s / 22) * 0.46) * Math.min(1, p.age / 8) * Math.min(1, (p.life - p.age) / 10);
       ctx.strokeStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
       ctx.beginPath();
       ctx.moveTo(x0, y0);

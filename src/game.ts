@@ -21,6 +21,7 @@ import { loadWindGrid, windGrid } from './sim/gfsWind';
 import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
 import { bearing, dist } from './sim/geo';
 import { fmtDist } from './ui/units';
+import { enableModelDrop, preloadBoatModel } from './render/glbBoat';
 
 type Screen = 'menu' | 'garage' | 'race';
 const LAYERS_KEY = 'sailgame.layers.v1';
@@ -106,6 +107,8 @@ export class Game {
       if (this.race) saveRace(this.race);
     });
     this.bindPick();
+    void preloadBoatModel();
+    enableModelDrop((ok, name) => toast(ok ? `Modèle « ${name} » chargé : il remplace le bateau jusqu’au rechargement de la page.` : `« ${name} » n’a pas pu être lu (voir la console).`));
     void loadWindGrid().then(() => {
       if (this.screen === 'menu') this.renderMenuUI();
     });
@@ -746,4 +749,14 @@ export class Game {
     const dir = windFrom(w[0], w[1]);
     hud.showPick(this.pickAt.x, this.pickAt.y, `${Math.round(Math.hypot(w[0], w[1]))} nds · de ${cardinal(dir)} (${Math.round(dir)}°)`);
   }
+}
+
+/** Petit message éphémère en bas de l'écran. */
+function toast(text: string) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = text;
+  document.body.appendChild(el);
+  window.setTimeout(() => el.classList.add('out'), 4200);
+  window.setTimeout(() => el.remove(), 4800);
 }
