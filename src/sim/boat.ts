@@ -141,6 +141,24 @@ export interface Boat {
   fleetId?: string;
   /** positionné par le suivi en direct : la simulation ne le déplace pas */
   live?: boolean;
+  /** programme du routage : à partir de l'heure t (h de course), cap hdg — suivi en mode Auto */
+  program?: Order[];
+  /** fin du programme (h de course) : au-delà, le pilote auto reprend la route conseillée */
+  programEnd?: number;
+}
+
+export interface Order {
+  t: number;
+  hdg: number;
+}
+
+/** Ordre du programme en vigueur à l'heure t, ou null (pas de programme, ou programme terminé). */
+export function activeOrder(b: Pick<Boat, 'program' | 'programEnd'>, t: number): Order | null {
+  const pr = b.program;
+  if (!pr?.length || b.programEnd === undefined || t >= b.programEnd) return null;
+  let cur: Order | null = null;
+  for (const o of pr) if (o.t <= t + 1e-6) cur = o;
+  return cur ?? pr[0];
 }
 
 /** Complète un bateau venu d'une ancienne sauvegarde. */

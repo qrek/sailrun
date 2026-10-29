@@ -6,16 +6,17 @@ import { WorldView } from './render/world';
 import { ImmersiveView } from './render/immersive';
 import { ChartView } from './render/chart';
 import { distUnit } from './ui/units';
-import { Boat, SAILS, SailId, changeSail, projectBoat, startRepair, startSleep, wakeUp } from './sim/boat';
+import { Boat, Order, SAILS, SailId, activeOrder, bestSail, changeSail, projectBoat, startRepair, startSleep, wakeUp } from './sim/boat';
+import { isoRoute } from './sim/isochrone';
 import { LonLat, norm180, norm360, smooth } from './sim/geo';
 import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
 import { bestHeading, decideEvery, nextTarget, planRoute } from './sim/router';
 import { sunElevation } from './sim/sun';
 import { SyntheticWind, WindSource, windFrom } from './sim/wind';
 import { GarageUI, loadSetup } from './ui/garageUI';
-import { Hud, LayerId, ViewMode, cardinal } from './ui/hud';
+import { Hud, LayerId, RouteRow, ViewMode, cardinal } from './ui/hud';
 import { renderMenu } from './ui/menu';
-import { raceClock } from './ui/dom';
+import { esc, raceClock } from './ui/dom';
 import { showFinish } from './ui/overlays';
 import { loadWindGrid, windGrid } from './sim/gfsWind';
 import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
@@ -76,6 +77,12 @@ export class Game {
   /** consigne en cours de réglage dans le pilote (aperçu de trajectoire) */
   private pendingHdg: number | null = null;
   private probeMarine: MarineSeries | null | undefined = undefined;
+  /** programme de routage affiché (ordres modifiables) et sa fin (h de course) */
+  private planOrders: (Order & { sail: SailId; twa: number })[] = [];
+  private planEnd = 0;
+  private planSum = '';
+  private planBusy = false;
+  private planClock = 0;
 
   constructor(app: HTMLElement) {
     this.ui = app.querySelector('#ui')!;
@@ -237,36 +244,41 @@ export class Game {
     this.fcDirty = true;
     this.projClock = 0;
     this.chart.windLayer = this.layers.wind;
+    // deux modes seulement : cap fixe ou Auto
+    if (race.player.lock === 'twa') race.player.lock = 'hdg';
+    this.planOrders = (race.player.program ?? []).map((o) => ({ ...o, sail: race.player.sail, twa: 0 }));
+    this.planEnd = race.player.programEnd ?? 0;
+    this.planSum = this.planOrders.length ? 'Programme repris de ta dernière session.' : '';
+    this.chart.onRingDrag = (h) => this.hud?.setPending(h);
+    this.chart.onRingOk = () => this.hud?.commitPending();
+    this.chart.onRingCancel = () => this.hud?.cancelPending();
     this.hud = new Hud(this.ui, {
       steer: (d) => this.steer(d),
       map3d: (on) => this.chart.set3d(on),
       preview: (h) => {
         this.pendingHdg = h;
         this.projClock = Math.min(this.projClock, 0.05);
+        this.syncRing();
       },
       commit: (h) => {
         const p = race.player;
         if (p.finished !== null) return;
         this.wake();
-        const twaMode = !p.auto && p.lock === 'twa';
+        const wasAuto = p.auto;
         this.setAuto(false, true);
-        if (twaMode) {
-          p.lock = 'twa';
-          p.lockTwa = norm180(p.twd - h);
-        } else {
-          p.lock = 'hdg';
-        }
+        p.lock = 'hdg';
         p.hdg = norm360(h);
         this.projClock = 0;
-        this.hud?.toast(twaMode ? `Consigne : ${Math.round(Math.abs(p.lockTwa))}° du vent ${p.lockTwa < 0 ? 'bâbord' : 'tribord'}` : `Consigne : cap ${String(Math.round(p.hdg)).padStart(3, '0')}°`);
+        this.syncRing();
+        this.hud?.toast(`Cap ${String(Math.round(p.hdg)).padStart(3, '0')}° verrouillé${wasAuto ? ' · Auto coupé' : ''}`);
       },
       setAuto: (on) => this.setAuto(on),
       sleep: () => {
         if (race.player.sleep > 0) return this.wake();
-        if (startSleep(race.player)) this.hud?.toast('Sieste de 2 h : le bateau garde sa barre, mais personne ne touche aux voiles.');
+        if (startSleep(race.player)) this.hud?.toast('Sieste de 2 h');
       },
       repair: () => {
-        if (startRepair(race.player)) this.hud?.toast('Réparation lancée. Le bateau avance moins vite pendant ce temps.');
+        if (startRepair(race.player)) this.hud?.toast('Réparation lancée');
       },
       bearAway: () => {
         const p = race.player;
@@ -279,19 +291,19 @@ export class Game {
       sail: (id) => {
         const p = race.player;
         if (p.sail === id) {
-          this.hud?.toast(`Le ${sailName(id)} est déjà envoyé.`);
+          this.hud?.toast(`${sailName(id)} déjà à poste`);
           return;
         }
         this.wake();
         if (p.autoSail) p.autoSail = false;
-        if (changeSail(p, id)) this.hud?.toast(`Envoi du ${sailName(id)} : 15 min au ralenti. Voile auto coupée.`);
+        if (changeSail(p, id)) this.hud?.toast(`Envoi du ${sailName(id)} · 15 min`);
         this.projClock = 0;
       },
       autoSail: (on) => {
         const p = race.player;
         p.autoSail = on;
         p.sailLag = 0;
-        this.hud?.toast(on ? 'Voile auto : la meilleure voile est envoyée dès que le vent change.' : 'Tu choisis tes voiles toi-même.');
+        this.hud?.toast(on ? 'Voile auto' : 'Voile verrouillée');
       },
       lock: (m) => {
         const p = race.player;
@@ -300,7 +312,7 @@ export class Game {
         p.lock = m;
         p.lockTwa = p.twa;
         this.projClock = 0;
-        this.hud?.toast(m === 'twa' ? `Barre à ${Math.round(Math.abs(p.twa))}° du vent : le cap suit les bascules.` : `Barre au cap ${Math.round(p.hdg)}° : le bateau ne bouge plus de cap.`);
+        this.hud?.toast(`Cap fixe ${String(Math.round(p.hdg)).padStart(3, '0')}°`);
       },
       forecast: (h) => {
         this.fcOffset = Math.max(0, Math.min(FC_MAX, h));
@@ -324,6 +336,52 @@ export class Game {
         } catch {
           /* rien */
         }
+      },
+      route: (hours) => void this.computeRoute(hours),
+      routeFollow: (on) => {
+        const p = race.player;
+        if (on) {
+          if (!this.planOrders.length) return;
+          this.applyProgram();
+          this.setAuto(true, true);
+          this.hud?.toast('Auto : suit ton programme');
+        } else {
+          p.program = undefined;
+          p.programEnd = undefined;
+          this.hud?.toast('Programme mis de côté');
+        }
+        this.projClock = 0;
+        this.refreshPlan();
+      },
+      routeShift: (i, min) => {
+        const o = this.planOrders[i];
+        if (!o) return;
+        o.t = Math.max(race.t, o.t + min / 60);
+        this.planOrders.sort((a, b) => a.t - b.t);
+        this.planEnd = Math.max(this.planEnd, o.t + 1);
+        this.planChanged();
+      },
+      routeDelete: (i) => {
+        this.planOrders.splice(i, 1);
+        this.planChanged();
+      },
+      routeAdd: (hhmm, hdg) => {
+        const t = this.nextLocal(hhmm);
+        const twa = norm180(race.player.twd - hdg);
+        this.planOrders.push({ t, hdg, sail: bestSail(twa, race.player.tws), twa });
+        this.planOrders.sort((a, b) => a.t - b.t);
+        this.planEnd = Math.max(this.planEnd, t + 6);
+        if (!this.planSum) this.planSum = 'Programme manuel.';
+        this.planChanged();
+      },
+      routeClear: () => {
+        this.planOrders = [];
+        this.planEnd = 0;
+        this.planSum = '';
+        race.player.program = undefined;
+        race.player.programEnd = undefined;
+        this.refreshPlan();
+        this.projClock = 0;
       },
       speed: (id) => {
         race.speed = id;
@@ -360,6 +418,8 @@ export class Game {
     this.hud.setDev(DEV);
     this.syncControls();
     this.hud.update(race, this.day);
+    this.refreshPlan();
+    this.syncRing();
   }
 
   private syncControls() {
@@ -392,6 +452,132 @@ export class Game {
     this.syncControls();
   }
 
+  /* ---------- cercle de cap, état du pilote ---------- */
+  private syncRing() {
+    const p = this.race?.player;
+    if (!p || p.finished !== null || this.immersiveOn) return this.chart.setRing(null);
+    this.chart.setRing({ pos: p.pos, hdg: p.hdg, twd: p.twd, tws: p.tws, pending: this.pendingHdg, sail: p.sail });
+  }
+
+  private updateAutoInfo() {
+    const race = this.race;
+    const p = race?.player;
+    if (!race || !p || !this.hud) return;
+    let txt: string;
+    if (!p.auto) {
+      txt = `<b>Cap fixe</b> · le bateau garde ${String(Math.round(p.hdg)).padStart(3, '0')}°`;
+    } else if (activeOrder(p, race.t)) {
+      const next = (p.program ?? []).find((o) => o.t > race.t + 1e-6);
+      txt = next ? `<b>Auto · programme</b> · ${this.localHM(next.t)} → ${String(Math.round(next.hdg)).padStart(3, '0')}°` : `<b>Auto · programme</b> · jusqu’à ${this.localHM(p.programEnd ?? race.t)}`;
+    } else {
+      const m = race.nextMark(p);
+      txt = `<b>Auto</b> · route conseillée${m ? ` vers ${m.name}` : ''}`;
+    }
+    this.hud.setAutoInfo(txt);
+  }
+
+  /* ---------- routage ---------- */
+  /** Heure locale d'un instant de course : « 14:30 », précédé du jour s'il n'est pas aujourd'hui. */
+  private localHM(t: number): string {
+    const race = this.race!;
+    const d = new Date(race.originUTC + t * 3600000);
+    const now = new Date(race.originUTC + race.t * 3600000);
+    const hm = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    return d.toDateString() === now.toDateString() ? hm : `${d.toLocaleDateString('fr-FR', { weekday: 'short' })} ${hm}`;
+  }
+
+  /** Prochaine occurrence d'une heure locale « hh:mm », en heures de course. */
+  private nextLocal(hhmm: string): number {
+    const race = this.race!;
+    const nowMs = race.originUTC + race.t * 3600000;
+    const [hh, mm] = hhmm.split(':').map(Number);
+    const d = new Date(nowMs);
+    d.setHours(hh, mm, 0, 0);
+    if (d.getTime() <= nowMs) d.setDate(d.getDate() + 1);
+    return (d.getTime() - race.originUTC) / 3600000;
+  }
+
+  private async computeRoute(hours: number) {
+    const race = this.race;
+    if (!race || this.planBusy) return;
+    const p = race.player;
+    if (p.finished !== null) return;
+    this.planBusy = true;
+    this.hud?.setRouteBusy(0);
+    try {
+      const course = { marks: race.def.marks ?? [], finish: race.def.finish, finishR: race.def.finishR };
+      const plan = await isoRoute(p.pos, race.t, hours, race.wind, p.perf, p.mark, course, p.hdg, (k) => this.hud?.setRouteBusy(k));
+      if (this.race !== race) return;
+      this.planOrders = plan.orders.map((o) => ({ t: o.t, hdg: o.hdg, sail: o.sail, twa: o.twa }));
+      this.planEnd = plan.t0 + plan.hours;
+      const gained = plan.remain0 - plan.remain1;
+      this.planSum = `Sur ${Math.round(plan.hours)} h : <b>${fmtDist(plan.sailed, true)}</b> parcourus, <b>${fmtDist(gained, true)}</b> de gagnés vers ${esc(race.nextMark(p)?.name ?? race.def.to)}. Calculé sur le vent ${race.realWind ? 'GFS' : 'simulé'} à ${this.localHM(race.t)}.`;
+      // déjà en Auto avec un programme : on le remplace directement
+      if (p.auto && p.program?.length) this.applyProgram();
+      this.refreshPlan();
+    } finally {
+      this.planBusy = false;
+      this.hud?.setRouteBusy(null);
+    }
+  }
+
+  /** Le programme affiché devient celui du pilote. */
+  private applyProgram() {
+    const p = this.race!.player;
+    p.program = this.planOrders.map((o) => ({ t: o.t, hdg: o.hdg }));
+    p.programEnd = this.planEnd;
+    p.decide = 0;
+  }
+
+  private planChanged() {
+    const p = this.race?.player;
+    if (p?.program) this.applyProgram();
+    this.projClock = 0;
+    this.refreshPlan();
+  }
+
+  /** Redessine le programme : trajectoire simulée en suivant les ordres, et la liste du panneau. */
+  private refreshPlan() {
+    const race = this.race;
+    if (!race || !this.hud) return;
+    const p = race.player;
+    if (!this.planOrders.length) {
+      this.chart.setPlan([]);
+      this.hud.setRoute(this.planSum ? { summary: this.planSum, rows: [], following: false, defaultTime: this.defaultOrderTime() } : null);
+      return;
+    }
+    this.chart.setRoute([]);
+    const sim: Boat = { ...p, auto: true, program: this.planOrders.map((o) => ({ t: o.t, hdg: o.hdg })), programEnd: this.planEnd };
+    const hours = Math.max(1, Math.min(72, this.planEnd - race.t));
+    const pr = projectBoat(sim, race.t, race.wind, hours, race.def.finish, race.def.finishR, this.projSteer(sim, race.wind), race.def.marks);
+    const at = (t: number) => pr.pts[Math.max(0, Math.min(pr.pts.length - 1, Math.round((t - race.t) / pr.dt)))];
+    const pts = pr.pts.map((pos, k) => ({ pos, order: false, label: k > 0 && (k * pr.dt) % 6 === 0 ? this.localHM(race.t + k * pr.dt) : '' }));
+    for (const o of this.planOrders) if (o.t >= race.t - 0.01) pts.push({ pos: at(o.t), order: true, label: `${this.localHM(o.t)} · ${String(Math.round(o.hdg)).padStart(3, '0')}°` });
+    this.chart.setPlan(pts);
+    const following = !!p.program?.length && p.auto;
+    const nextIdx = this.planOrders.findIndex((o) => o.t > race.t + 1e-6);
+    const rows: RouteRow[] = this.planOrders.map((o, i) => {
+      const w = race.wind.at(at(o.t)[0], at(o.t)[1], o.t);
+      const twa = norm180(windFrom(w[0], w[1]) - o.hdg);
+      return {
+        when: this.localHM(o.t),
+        hdg: Math.round(o.hdg),
+        sail: sailName(bestSail(twa, Math.hypot(w[0], w[1]))),
+        twa: `TWA ${Math.round(Math.abs(twa))}° ${twa < 0 ? 'bâb' : 'tri'}`,
+        past: o.t <= race.t && i !== nextIdx - 1,
+        next: i === nextIdx,
+      };
+    });
+    this.hud.setRoute({ summary: this.planSum, rows, following, defaultTime: this.defaultOrderTime() });
+  }
+
+  private defaultOrderTime(): string {
+    const race = this.race!;
+    const d = new Date(race.originUTC + race.t * 3600000 + 3600000);
+    d.setMinutes(0, 0, 0);
+    return `${String(d.getHours()).padStart(2, '0')}:00`;
+  }
+
   /* ---------- commandes ---------- */
   private steer(delta: number) {
     const race = this.race;
@@ -399,19 +585,14 @@ export class Game {
     const p = race.player;
     this.wake();
     if (p.auto) this.setAuto(false);
-    if (p.lock === 'twa') {
-      p.lockTwa = norm180(p.lockTwa - delta);
-      p.hdg = norm360(p.twd - p.lockTwa);
-    } else {
-      p.hdg = norm360(p.hdg + delta);
-    }
+    p.hdg = norm360(p.hdg + delta);
     this.projClock = Math.min(this.projClock, 0.15);
   }
 
   /** Toucher la barre ou les voiles réveille le skipper. */
   private wake() {
     const p = this.race?.player;
-    if (p && wakeUp(p)) this.hud?.toast(`Tu as réveillé ton skipper (énergie ${Math.round(p.energy)} %).`);
+    if (p && wakeUp(p)) this.hud?.toast(`Skipper réveillé · ${Math.round(p.energy)} %`);
   }
 
   private setAuto(on: boolean, quiet = false) {
@@ -426,7 +607,8 @@ export class Game {
     p.decide = 0;
     this.routeClock = 0;
     this.projClock = 0;
-    if (!quiet) this.hud?.toast(on ? 'Pilote auto : il suit la route conseillée' : 'Tu as la barre');
+    if (!quiet) this.hud?.toast(on ? (activeOrder(p, this.race!.t) ? 'Auto : suit ton programme' : 'Auto : route conseillée') : 'Cap fixe');
+    this.syncRing();
   }
 
   private onKey(e: KeyboardEvent) {
@@ -474,18 +656,18 @@ export class Game {
       this.chart.setMarks(this.race?.def.marks ?? [], boat.mark);
       if (m && !quiet) {
         hud.say(null, `Marque passée : ${m.name}.`, 'sys');
-        hud.toast(`${m.name} passé${boat.mark === this.race?.def.marks?.length ? ' — cap sur la ligne d’arrivée !' : ''}`);
+        hud.toast(`${m.name} passé`);
       }
       return;
     }
     if (quiet) return;
-    if (ev === 'tack') hud.toast('Virement de bord : le bateau ralentit un moment');
-    else if (ev === 'gybe') hud.toast('Empannage : le bateau ralentit un moment');
-    else if (ev === 'avarie') hud.toast('Aïe ! Quelque chose a cassé à bord.');
-    else if (ev === 'repaired') hud.toast('Réparation terminée, le bateau repart à pleine vitesse.');
-    else if (ev === 'woke') hud.toast('Ton skipper est réveillé et en forme.');
-    else if (ev === 'land') hud.toast('Le bateau touche la côte : change de cap !');
-    else if (ev === 'sail') hud.toast(`Voile auto : envoi du ${sailName(boat.sail)}.`);
+    if (ev === 'tack') hud.toast('Virement de bord');
+    else if (ev === 'gybe') hud.toast('Empannage');
+    else if (ev === 'avarie') hud.toast('Avarie à bord !');
+    else if (ev === 'repaired') hud.toast('Réparation terminée');
+    else if (ev === 'woke') hud.toast('Skipper réveillé');
+    else if (ev === 'land') hud.toast('Côte en vue : change de cap !');
+    else if (ev === 'sail') hud.toast(`Voile auto : ${sailName(boat.sail)}`);
   }
 
   /* ---------- boucle ---------- */
@@ -548,13 +730,12 @@ export class Game {
 
     this.projClock -= dt;
     if (this.projClock <= 0) {
-      this.projClock = 1;
+      this.projClock = this.pendingHdg !== null ? 0.4 : 3;
       if (p.finished === null) {
         let src = p;
         if (this.pendingHdg !== null) {
           // aperçu : le bateau avec la nouvelle consigne, sans la valider
-          const twaMode = !p.auto && p.lock === 'twa';
-          src = { ...p, auto: false, lock: twaMode ? 'twa' : 'hdg', hdg: this.pendingHdg, lockTwa: norm180(p.twd - this.pendingHdg) };
+          src = { ...p, auto: false, lock: 'hdg', hdg: this.pendingHdg, lockTwa: norm180(p.twd - this.pendingHdg) };
         }
         const pr = projectBoat(src, race.t, race.wind, PROJ_HOURS, race.def.finish, race.def.finishR, this.projSteer(src, race.wind), race.def.marks);
         this.chart.setProjection(pr.pts, pr.dt);
@@ -566,9 +747,10 @@ export class Game {
 
     this.routeClock -= dt;
     if (this.routeClock <= 0) {
-      this.routeClock = 1.5;
+      // route conseillée jusqu'à l'arrivée : lourde, et le vent change lentement : une fois par minute
+      this.routeClock = 60;
       const rt = p.finished === null ? planRoute(p, race.t, race.wind, race.def.finish, race.def.finishR, 420, race.def.marks) : [];
-      this.chart.setRoute(rt);
+      this.chart.setRoute(this.planOrders.length ? [] : rt);
       const end = rt[rt.length - 1];
       this.hud?.setEta(end && dist(end, race.def.finish) < race.def.finishR + 1 ? rt.length - 1 : null);
     }
@@ -578,6 +760,13 @@ export class Game {
       this.hud?.update(race, this.day);
       this.chart.updateBoats();
       this.updatePick(windT);
+      this.syncRing();
+      this.updateAutoInfo();
+    }
+    this.planClock -= dt;
+    if (this.planClock <= 0) {
+      this.planClock = 30;
+      if (this.planOrders.length) this.refreshPlan();
     }
     if (this.probe) {
       this.updateProbe(windT);
@@ -607,6 +796,11 @@ export class Game {
     if (!p.auto) return undefined;
     let decide = 0;
     return (b: Boat, t: number) => {
+      const o = activeOrder(b, t);
+      if (o) {
+        b.hdg = o.hdg;
+        return;
+      }
       decide -= 0.1;
       if (decide <= 0) {
         b.hdg = bestHeading(b.pos, t, nextTarget(b), b.perf, wind);

@@ -12,7 +12,7 @@ import { DistUnit, distUnit, fmtDist, setDistUnit, toUnit, unitLabel } from './u
 export type LayerId = 'wind' | 'clouds';
 export type ViewMode = '2d' | '3d' | 'reset' | 'immersive';
 
-export type PilotMode = 'route' | 'hdg' | 'twa';
+export type PilotMode = 'auto' | 'hdg';
 
 export interface HudHandlers {
   steer(delta: number): void;
@@ -38,6 +38,26 @@ export interface HudHandlers {
   units(u: DistUnit): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
+  /** routage : calcule la route sur `hours` heures */
+  route(hours: number): void;
+  /** le pilote Auto suit (ou non) le programme */
+  routeFollow(on: boolean): void;
+  /** décale un ordre de `min` minutes */
+  routeShift(i: number, min: number): void;
+  routeDelete(i: number): void;
+  /** ajoute un ordre : heure locale « hh:mm », cap vrai */
+  routeAdd(hhmm: string, hdg: number): void;
+  routeClear(): void;
+}
+
+/** Une ligne du programme de routage, prête à afficher. */
+export interface RouteRow {
+  when: string;
+  hdg: number;
+  sail: string;
+  twa: string;
+  past: boolean;
+  next: boolean;
 }
 
 type AlertAction = 'route' | 'sleep' | 'repair' | 'bear' | 'sail';
@@ -54,6 +74,7 @@ const SAIL_WHY: Record<SailId, string> = {
 const FC_MAX = 120;
 
 const ICON_PLAY = '<svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><path d="M2,1.5 L12.5,8 L2,14.5 Z" fill="currentColor"/></svg>';
+const ICON_ROUTE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="16" r="2.2" fill="currentColor"/><circle cx="16" cy="4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 14.5 C9 12 6 8 10 7 C12.5 6.4 13 5.5 14 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="2.4 2.2"/></svg>';
 const ICON_POLAR = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3,2 V18 M3,4 C10,4 16,8 16,12 C16,15 12,17 3,17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_TROPHY = '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M5 2 H13 V7 A4 4 0 0 1 5 7 Z M5 4 H2 A3 3 0 0 0 5 8 M13 4 H16 A3 3 0 0 1 13 8 M9 11 V14 M6 16 H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_WINDS = '<svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true"><path d="M1 5 H12 A3 3 0 1 0 9 2 M1 10 H16 A3 3 0 1 1 13 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -116,16 +137,41 @@ export class Hud {
       </div>
 
       <nav class="rail" aria-label="Outils">
+        <button type="button" data-open="route" aria-expanded="false">${ICON_ROUTE}<span>Routage</span><b class="rbadge" data-rt-badge hidden>ON</b></button>
         <button type="button" data-open="fc" aria-expanded="false">${ICON_WINDS}<span>Prévisions</span><b class="rbadge" data-fc-badge hidden></b></button>
         <button type="button" data-open="tele" aria-expanded="false">${ICON_TELE}<span>Télémétrie</span></button>
         <button type="button" data-open="board" aria-expanded="false" data-board-btn>${ICON_TROPHY}<span>Classement</span></button>
         <button type="button" data-open="skip" aria-expanded="false">${ICON_SKIPPER}<span>Skipper</span><b class="rbadge warn" data-sk-badge hidden>!</b></button>
         <button type="button" data-open="polar" aria-expanded="false" data-polar>${ICON_POLAR}<span>Polaire</span></button>
-        <button type="button" data-map3d aria-pressed="true">${ICON_RELIEF}<span>Relief 3D</span></button>
+        <button type="button" data-map3d aria-pressed="false">${ICON_RELIEF}<span>Relief 3D</span></button>
         <button type="button" data-view="immersive" aria-pressed="false">${ICON_EYE}<span>Immersif</span></button>
         <button type="button" data-view="reset">${ICON_TARGET}<span>Recentrer</span></button>
         <button type="button" data-open="set" aria-expanded="false">${ICON_GEAR}<span>Options</span></button>
       </nav>
+
+      <div class="card panel rt" data-panel="route" hidden>
+        <div class="p-head"><span class="eyebrow">Routage · météo GFS</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="rt-h">
+          <span class="rt-l">Calculer sur</span>
+          <div class="seg mini" role="group" aria-label="Horizon du routage">${[6, 12, 24, 48].map((h) => `<button type="button" data-rt-h="${h}" aria-pressed="${h === 24}">${h} h</button>`).join('')}</div>
+        </div>
+        <button type="button" class="rt-go" data-rt-go><span>Calculer la route</span><i data-rt-bar></i></button>
+        <div class="rt-res" data-rt-res hidden>
+          <p class="rt-sum" data-rt-sum></p>
+          <ol class="rt-list" data-rt-list></ol>
+          <div class="rt-add">
+            <span class="rt-l">Ajouter un ordre</span>
+            <label>à <input type="time" data-rt-time step="900"></label>
+            <label>cap <input type="number" min="0" max="359" data-rt-hdg inputmode="numeric">°</label>
+            <button type="button" class="pill" data-rt-add>Ajouter</button>
+          </div>
+          <div class="rt-foot">
+            <button type="button" class="rt-follow" data-rt-follow>Le pilote Auto suit ce programme</button>
+            <button type="button" class="pill ghost" data-rt-clear>Effacer</button>
+          </div>
+        </div>
+        <p class="p-note" data-rt-note>Le routage cherche la route la plus rapide vers la prochaine marque puis l’arrivée, sur les prévisions de vent. Chaque ligne est un ordre de barre à une heure précise (heure locale) : décale-les, supprimes-en, ajoutes-en, puis confie le programme au pilote Auto.</p>
+      </div>
 
       <div class="card panel fc" data-panel="fc" data-fc-panel hidden>
         <div class="p-head"><span class="fc-info"><span class="fc-label" data-fc-label>Prévisions</span><span class="fc-sub" data-fc-sub>Glisse pour voir le vent à venir</span></span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
@@ -224,22 +270,25 @@ export class Hud {
       <div class="cockpit">
         <div class="card helm2">
           <div class="seg mini modes" role="group" aria-label="Mode de pilotage">
-            <button type="button" data-mode="route" aria-pressed="true" title="Le pilote suit la route conseillée">Route</button>
-            <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde son cap">Cap</button>
-            <button type="button" data-mode="twa" aria-pressed="false" title="Le bateau garde son angle au vent">TWA</button>
+            <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde le cap que tu as validé">${ICON_LOCK} Cap fixe</button>
+            <button type="button" data-mode="auto" aria-pressed="true" title="Le pilote suit ton programme de routage, sinon la route conseillée">Auto</button>
           </div>
+          <div class="h-auto" data-auto-info></div>
           ${pilotDial()}
           <div class="h-read"><span>BSP <b data-bsp>0,0</b></span><span>Vent <b data-tws>0</b> nds</span></div>
           <div class="h-pend" data-pend hidden><span data-pend-info></span><span class="warn" data-pend-warn></span></div>
           <div class="h-act">
-            <button type="button" class="nb" data-nudge="-1" aria-label="1° à gauche">−1°</button>
+            <button type="button" class="nb" data-nudge="-10" aria-label="10° à gauche">−10</button>
+            <button type="button" class="nb" data-nudge="-1" aria-label="1° à gauche">−1</button>
             <button type="button" class="ok" data-pend-ok disabled><span data-pend-v>OK</span></button>
-            <button type="button" class="nb" data-nudge="1" aria-label="1° à droite">+1°</button>
+            <button type="button" class="nb" data-nudge="1" aria-label="1° à droite">+1</button>
+            <button type="button" class="nb" data-nudge="10" aria-label="10° à droite">+10</button>
           </div>
         </div>
         <div class="card sailc">
+          <div class="sx-now" data-sx-now></div>
           <div class="sx-head">
-            <span class="eyebrow">Voile</span>
+            <span class="eyebrow">Changer</span>
             <div class="seg mini" role="group" aria-label="Changement de voile">
               <button type="button" data-autosail="1" aria-pressed="true" title="Change de voile tout seul quand une autre est meilleure">Auto</button>
               <button type="button" data-autosail="0" aria-pressed="false" title="Garde la voile actuelle">${ICON_LOCK}</button>
@@ -322,8 +371,8 @@ export class Hud {
       b.addEventListener('click', () => {
         const m = b.dataset.mode as PilotMode;
         this.cancelPending();
-        if (m === 'route') this.h.setAuto(true);
-        else this.h.lock(m);
+        if (m === 'auto') this.h.setAuto(true);
+        else this.h.lock('hdg');
       }),
     );
     q(r, '[data-sleep]').addEventListener('click', () => this.h.sleep());
@@ -377,6 +426,31 @@ export class Hud {
     range.addEventListener('input', () => this.h.forecast(Number(range.value)));
     q(r, '[data-fc-play]').addEventListener('click', () => this.h.forecastPlay());
     q(r, '[data-fc-now]').addEventListener('click', () => this.h.forecast(0));
+
+    // routage
+    let rtH = 24;
+    r.querySelectorAll<HTMLButtonElement>('[data-rt-h]').forEach((b) =>
+      b.addEventListener('click', () => {
+        rtH = Number(b.dataset.rtH);
+        r.querySelectorAll<HTMLButtonElement>('[data-rt-h]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      }),
+    );
+    q(r, '[data-rt-go]').addEventListener('click', () => this.h.route(rtH));
+    q(r, '[data-rt-follow]').addEventListener('click', () => this.h.routeFollow(!this.rtFollowing));
+    q(r, '[data-rt-clear]').addEventListener('click', () => this.h.routeClear());
+    q(r, '[data-rt-add]').addEventListener('click', () => {
+      const tm = q<HTMLInputElement>(r, '[data-rt-time]').value;
+      const hd = Number(q<HTMLInputElement>(r, '[data-rt-hdg]').value);
+      if (!/^\d\d:\d\d$/.test(tm) || !Number.isFinite(hd)) return this.toast('Indique une heure et un cap.');
+      this.h.routeAdd(tm, ((Math.round(hd) % 360) + 360) % 360);
+    });
+    q(r, '[data-rt-list]').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-i]');
+      if (!b) return;
+      const i = Number(b.dataset.i);
+      if (b.dataset.act === 'del') this.h.routeDelete(i);
+      else this.h.routeShift(i, Number(b.dataset.act));
+    });
 
     q(r, '[data-alert-btn]').addEventListener('click', () => {
       const a = this.alertAction;
@@ -450,7 +524,7 @@ export class Hud {
     setPilotDial(r, { hdg: v.hdg, twd: v.twd, twa: v.twa, cons: v.auto ? null : v.hdg, pending: pend, wp: v.wp });
     const deg = (x: number) => `${String(Math.round(((x % 360) + 360) % 360)).padStart(3, '0')}°`;
     const side = (twa: number) => `${Math.round(Math.abs(twa))}° ${twa < 0 ? 'bâb' : 'tri'}`;
-    r.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === (v.auto ? 'route' : v.lock))));
+    r.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === (v.auto ? 'auto' : 'hdg'))));
     // aperçu de la nouvelle consigne, juste au-dessus du bouton OK
     const box = q(r, '[data-pend]');
     box.hidden = pend === null;
@@ -462,7 +536,7 @@ export class Hud {
     const b = v.boat;
     const ntwa = norm180(v.twd - pend);
     const dh = norm180(pend - v.hdg);
-    q(r, '[data-pend-v]').textContent = `OK ${v.lock === 'twa' && !v.auto ? side(ntwa) : deg(pend)}`;
+    q(r, '[data-pend-v]').textContent = `OK ${deg(pend)}`;
     const sail = b.autoSail ? bestSail(ntwa, v.tws) : b.sail;
     const bsp = boatSpeed(ntwa, v.tws, b.perf, sail);
     const tgt = v.wp;
@@ -520,6 +594,53 @@ export class Hud {
     const badge = q(r, '[data-fc-badge]');
     badge.hidden = hours < 0.5;
     badge.textContent = `+${Math.round(hours)} h`;
+  }
+
+  private rtFollowing = false;
+
+  /** Calcul en cours : barre de progression dans le bouton (0 à 1), null = terminé. */
+  setRouteBusy(k: number | null) {
+    const b = q<HTMLButtonElement>(this.root, '[data-rt-go]');
+    b.disabled = k !== null;
+    b.classList.toggle('busy', k !== null);
+    q(b, 'span').textContent = k === null ? 'Recalculer la route' : 'Calcul…';
+    q(this.root, '[data-rt-bar]').style.width = `${Math.round((k ?? 0) * 100)}%`;
+  }
+
+  /** Programme de routage : résumé, ordres, état du suivi. null = aucun programme. */
+  setRoute(d: { summary: string; rows: RouteRow[]; following: boolean; defaultTime: string } | null) {
+    const r = this.root;
+    this.rtFollowing = !!d?.following;
+    q(r, '[data-rt-res]').hidden = !d;
+    q(r, '[data-rt-note]').hidden = !!d;
+    q(r, '[data-rt-badge]').hidden = !d?.following;
+    if (!d) {
+      q(r, '[data-rt-go] span').textContent = 'Calculer la route';
+      return;
+    }
+    q(r, '[data-rt-sum]').innerHTML = d.summary;
+    q(r, '[data-rt-list]').innerHTML = d.rows.length
+      ? d.rows
+          .map(
+            (o, i) => `<li class="${o.past ? 'past' : ''}${o.next ? ' next' : ''}">
+          <time>${esc(o.when)}</time>
+          <span class="o"><b>${String(o.hdg).padStart(3, '0')}°</b><small>${esc(o.sail)} · ${esc(o.twa)}</small></span>
+          <span class="b"><button type="button" data-i="${i}" data-act="-30" aria-label="30 min plus tôt">−30′</button><button type="button" data-i="${i}" data-act="30" aria-label="30 min plus tard">+30′</button><button type="button" data-i="${i}" data-act="del" class="del" aria-label="Supprimer l’ordre">${ICON_CLOSE}</button></span>
+        </li>`,
+          )
+          .join('')
+      : '<li class="empty">Aucun ordre : le pilote garde le cap actuel.</li>';
+    const f = q(r, '[data-rt-follow]');
+    f.textContent = d.following ? 'Programme suivi · reprendre la main' : 'Le pilote Auto suit ce programme';
+    f.classList.toggle('on', d.following);
+    const tIn = q<HTMLInputElement>(r, '[data-rt-time]');
+    if (!tIn.value) tIn.value = d.defaultTime;
+  }
+
+  /** Ligne d'état du pilote Auto (ce qu'il suit, prochain ordre). */
+  setAutoInfo(text: string) {
+    const el = q(this.root, '[data-auto-info]');
+    if (el.innerHTML !== text) el.innerHTML = text;
   }
 
   onProbeClose: (() => void) | null = null;
@@ -653,7 +774,7 @@ export class Hud {
     const wp = p.route[p.wp];
     const wpb = wp && p.finished === null ? bearing(p.pos, wp) : null;
     this.view = { hdg: p.hdg, twd: p.twd, twa: p.twa, tws: p.tws, wp: wpb, auto: p.auto, lock: p.lock, boat: p };
-    r.querySelector<HTMLButtonElement>('[data-mode="route"]')!.disabled = p.avarie === 'pilote';
+    r.querySelector<HTMLButtonElement>('[data-mode="auto"]')!.disabled = p.avarie === 'pilote';
     this.drawPilot();
 
     // voiles
@@ -667,6 +788,12 @@ export class Hud {
       q(r, `[data-sp="${s.id}"]`).textContent = p.sail === s.id && p.sailChange > 0 ? 'envoi…' : pct(sailFactor(s.id, p.twa, p.tws));
     }
     r.querySelectorAll<HTMLButtonElement>('[data-autosail]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.autosail === '1') === p.autoSail)));
+    const cur = SAILS.find((x) => x.id === p.sail)!;
+    const nowHtml = `<span class="sx-ic" style="--sc: ${SAIL_COLOR[p.sail]}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[p.sail]}</svg></span><span class="sx-t"><small>${p.sailChange > 0 ? 'Envoi en cours' : 'À poste'}</small><b>${esc(cur.name)}</b><em>${p.sailChange > 0 ? `encore ${Math.max(1, Math.round(p.sailChange * 60))} min` : `${pct(sailFactor(p.sail, p.twa, p.tws))} de la polaire${best !== p.sail ? ` · mieux : ${esc(SAILS.find((x) => x.id === best)!.name)}` : ''}`}</em></span><span class="sx-mode">${p.autoSail ? 'Voile auto' : 'Voile verrouillée'}</span>`;
+    const nowEl = q(r, '[data-sx-now]');
+    if (nowEl.innerHTML !== nowHtml) nowEl.innerHTML = nowHtml;
+    nowEl.classList.toggle('busy', p.sailChange > 0);
+    nowEl.classList.toggle('warn', best !== p.sail && p.sailChange <= 0);
     const xkey = `${Math.round(p.tws)}.${Math.round(p.twa)}.${this.pending === null ? '' : Math.round(norm180(p.twd - this.pending))}`;
     if (xkey !== this.xkey && this.polarOpen) {
       this.xkey = xkey;

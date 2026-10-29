@@ -1,7 +1,7 @@
 import { RaceDef, raceById } from '../data/races';
 import { Setup, botSetup, calibrated, isLightColor, lookOf, perfOf, styleOf } from '../data/garage';
 import { genPerf, shortName } from '../data/fleet';
-import { Boat, BoatEvent, bestSail, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
+import { Boat, BoatEvent, activeOrder, bestSail, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
 import { LonLat, Rng, dist } from './geo';
 import { bestHeading, decideEvery, nextTarget } from './router';
 import { routeTimes } from './solo';
@@ -304,7 +304,12 @@ export class Race {
       if (b.finished !== null || b.live) continue;
       if (!b.isPlayer) this.botBrain(b, dt, emit);
       if (b.isPlayer && b.avarie === 'pilote' && b.auto) b.auto = false;
-      if (b.auto) {
+      const order = b.auto ? activeOrder(b, this.t) : null;
+      if (order) {
+        // mode Auto avec un programme de routage : le cap suit les ordres, à l'heure dite
+        b.hdg = order.hdg;
+        nextTarget(b);
+      } else if (b.auto) {
         b.decide -= dt;
         if (b.decide <= 0) {
           const target: LonLat = nextTarget(b);

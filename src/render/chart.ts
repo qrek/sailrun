@@ -5,7 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 
 maplibregl.setWorkerUrl(workerUrl);
-import { Boat } from '../sim/boat';
+import { Boat, SAILS, SailId, bestSail } from '../sim/boat';
 import { LonLat, dist } from '../sim/geo';
 import { WindSource } from '../sim/wind';
 
@@ -17,6 +17,8 @@ import { WindSource } from '../sim/wind';
  */
 
 const OFM = 'https://tiles.openfreemap.org';
+const SAIL_LABEL: Record<string, string> = Object.fromEntries(SAILS.map((s) => [s.id, s.name.toUpperCase()]));
+const SAIL_COLOR: Record<SailId, string> = { foc: '#22D3EE', code0: '#A78BFA', spi: '#FB7185' };
 
 function graticule(): FeatureCollection {
   const f: Feature[] = [];
@@ -61,6 +63,9 @@ function seaLevelDem() {
   });
 }
 
+/** Petit écran ou machine modeste : tuiles de relief deux fois moins nombreuses, moins de vent animé. */
+const LITE = typeof window !== 'undefined' && (Math.min(window.innerWidth, window.innerHeight) < 700 || (navigator.hardwareConcurrency ?? 8) <= 4);
+
 /** Repères de la course : quelques ports et archipels, pas de villes ni de routes. */
 const PLACES: [string, number, number, number][] = [
   ['Saint-Malo', -2.02, 48.65, 1],
@@ -92,9 +97,9 @@ function style(): StyleSpecification {
     projection: { type: 'globe' },
     sources: {
       // altitudes et profondeurs réelles (terrarium : AWS Open Data, Mapzen/SRTM/GEBCO)
-      depth: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 10, encoding: 'terrarium', attribution: 'Mapzen, SRTM, GEBCO' },
+      depth: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: LITE ? 512 : 256, maxzoom: LITE ? 9 : 10, encoding: 'terrarium', attribution: 'Mapzen, SRTM, GEBCO' },
       // même source, fonds marins ramenés à 0 m : seule la terre prend du relief en 3D
-      dem: { type: 'raster-dem', tiles: ['seadem://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 10, encoding: 'terrarium' },
+      dem: { type: 'raster-dem', tiles: ['seadem://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 512, maxzoom: 9, encoding: 'terrarium' },
       omt: { type: 'vector', url: `${OFM}/planet`, attribution: '© OpenMapTiles © OpenStreetMap' },
       grat: { type: 'geojson', data: graticule() },
       places: { type: 'geojson', data: placesFC() },
@@ -184,7 +189,9 @@ export class ChartView {
       minZoom: 2,
       maxZoom: 12,
       maxPitch: 60,
-      pitch: 25,
+      pitch: 0,
+      pixelRatio: Math.min(window.devicePixelRatio || 1, LITE ? 1.5 : 2),
+      fadeDuration: 150,
       attributionControl: { compact: true },
       dragRotate: false,
       renderWorldCopies: false,
@@ -202,7 +209,11 @@ export class ChartView {
       this.resetParticles();
     });
     this.map.on('resize', () => this.sizeCanvas());
-    this.map.on('load', () => this.setup());
+    this.map.on('load', () => {
+      this.setup();
+      // sur téléphone, les crédits se replient derrière le bouton « i » pour libérer la carte
+      if (LITE) window.setTimeout(() => this.el.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'), 2500);
+    });
     this.sizeCanvas();
   }
 
@@ -216,11 +227,15 @@ export class ChartView {
 
   private setup() {
     const m = this.map;
-    m.setTerrain({ source: 'dem', exaggeration: 1.8 });
+    // relief 3D seulement à la demande (bouton Relief 3D) : c'est la partie la plus lourde de la carte
     m.addImage('boat', boatIcon(), { sdf: true });
     const src = (id: string) => m.addSource(id, { type: 'geojson', data: EMPTY });
-    for (const id of ['tracks', 'route', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
+    for (const id of ['tracks', 'route', 'plan', 'planpts', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
     m.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#ffd84d', 'line-width': 1.6, 'line-opacity': 0.75, 'line-dasharray': [2, 2] } });
+    m.addLayer({ id: 'plan-c', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0c2c48', 'line-width': 6, 'line-opacity': 0.35 } });
+    m.addLayer({ id: 'plan', type: 'line', source: 'plan', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffd84d', 'line-width': 3 } });
+    m.addLayer({ id: 'planpts', type: 'circle', source: 'planpts', paint: { 'circle-radius': ['case', ['get', 'order'], 6, 3], 'circle-color': ['case', ['get', 'order'], '#ffd84d', '#fff6c8'], 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
+    m.addLayer({ id: 'planlbl', type: 'symbol', source: 'planpts', filter: ['!=', ['get', 'label'], ''], layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, -1.25], 'text-optional': true }, paint: { 'text-color': '#ffd84d', 'text-halo-color': '#0c2c48', 'text-halo-width': 1.6 } });
     m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 3, 1.6], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.7] } });
     m.addLayer({ id: 'proj', type: 'line', source: 'proj', paint: { 'line-color': '#ffffff', 'line-width': 1.6, 'line-dasharray': [1, 1.5], 'line-opacity': 0.9 } });
     m.addLayer({ id: 'projpts', type: 'circle', source: 'projpts', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff', 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
@@ -281,20 +296,32 @@ export class ChartView {
   /* ---------- objets de course ---------- */
   setBoats(boats: Boat[]) {
     this.boats = boats;
+    this.tracksAt = 0;
     this.followFirst = true;
     this.updateBoats();
   }
 
+  private tracksAt = 0;
   updateBoats() {
     const feats: Feature[] = [];
     const tracks: Feature[] = [];
+    // les traces bougent peu : on ne les renvoie à la carte que toutes les 5 s
+    const now = performance.now();
+    const withTracks = now - this.tracksAt > 5000;
+    if (withTracks) this.tracksAt = now;
     for (const b of this.boats) {
-      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, label: b.isPlayer ? 'TOI' : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
-      const tr = b.isPlayer ? b.trail : b.trail.slice(-120);
+      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, label: b.isPlayer ? `TOI · ${SAIL_LABEL[b.sail] ?? ''}${b.sailChange > 0 ? '…' : ''}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
+      const tr = !withTracks ? [] : b.isPlayer ? b.trail : b.trail.slice(-120);
       if (tr.length) tracks.push({ type: 'Feature', properties: { color: b.isPlayer ? '#ffffff' : b.color, me: b.isPlayer }, geometry: { type: 'LineString', coordinates: [...tr.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]] } });
     }
     this.set('boats', { type: 'FeatureCollection', features: feats });
-    this.set('tracks', { type: 'FeatureCollection', features: tracks });
+    if (withTracks) this.set('tracks', { type: 'FeatureCollection', features: tracks });
+  }
+
+  /** Routage : la route calculée, un point par pas de temps, étiquettes aux changements de cap. */
+  setPlan(pts: { pos: LonLat; order: boolean; label: string }[]) {
+    this.set('plan', pts.length > 1 ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pts.map((p) => p.pos) } } : EMPTY);
+    this.set('planpts', { type: 'FeatureCollection', features: pts.map((p) => ({ type: 'Feature', properties: { order: p.order, label: p.label }, geometry: { type: 'Point', coordinates: p.pos } })) });
   }
 
   setRoute(pts: LonLat[]) {
@@ -378,9 +405,18 @@ export class ChartView {
   }
 
   /* ---------- vent : traits qui filent ---------- */
+  // Le vent est échantillonné sur une grille à l'écran (une fois par seconde, ou quand la carte bouge),
+  // puis les traits se déplacent en pixels : plus aucun calcul de projection par trait et par image.
+  private field: Float32Array | null = null; // par nœud : dx, dy (px par image à 60 i/s), force (nds)
+  private fCols = 0;
+  private fRows = 0;
+  private fAt = -1e9;
+  private fWindT = NaN;
+  private readonly CELL = 28;
+
   private sizeCanvas() {
     const r = this.el.getBoundingClientRect();
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = Math.min(LITE ? 1.5 : 2, window.devicePixelRatio || 1);
     this.canvas.width = Math.max(1, Math.round(r.width * dpr));
     this.canvas.height = Math.max(1, Math.round(r.height * dpr));
     this.canvas.style.width = `${r.width}px`;
@@ -390,14 +426,45 @@ export class ChartView {
 
   private resetParticles() {
     this.particles = [];
+    this.field = null;
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
+  private buildField(wind: WindSource, windT: number) {
+    const w = this.el.clientWidth;
+    const h = this.el.clientHeight;
+    const C = this.CELL;
+    const cols = Math.ceil(w / C) + 1;
+    const rows = Math.ceil(h / C) + 1;
+    const f = new Float32Array(cols * rows * 3);
+    const k = 0.55 * 0.35; // px par nœud et par image (60 i/s)
+    for (let j = 0; j < rows; j++) {
+      for (let i = 0; i < cols; i++) {
+        const o = (j * cols + i) * 3;
+        const x = i * C;
+        const y = j * C;
+        const ll = this.map.unproject([x, y]);
+        // hors du globe : la projection inverse ne retombe pas sur le même pixel
+        const back = this.map.project(ll);
+        if (!Number.isFinite(ll.lat) || Math.abs(back.x - x) > 3 || Math.abs(back.y - y) > 3) {
+          f[o + 2] = -1;
+          continue;
+        }
+        const [u, v] = wind.at(ll.lng, ll.lat, windT);
+        f[o] = u * k;
+        f[o + 1] = -v * k;
+        f[o + 2] = Math.hypot(u, v);
+      }
+    }
+    this.field = f;
+    this.fCols = cols;
+    this.fRows = rows;
+    this.fAt = performance.now();
+    this.fWindT = windT;
+  }
+
   private spawn() {
-    const b = this.map.getBounds();
-    const lon = b.getWest() + Math.random() * (b.getEast() - b.getWest());
-    const lat = b.getSouth() + Math.random() * (b.getNorth() - b.getSouth());
-    return { lon, lat, age: 0, life: 40 + Math.random() * 60 };
+    return { lon: Math.random() * this.el.clientWidth, lat: Math.random() * this.el.clientHeight, age: 0, life: 40 + Math.random() * 60 };
   }
 
   frame(f: ChartFrame, dt: number) {
@@ -406,6 +473,7 @@ export class ChartView {
       this.followFirst = false;
       this.jumpTo(f.focus, 7);
     }
+    this.placeRing();
     const ctx = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
@@ -415,40 +483,205 @@ export class ChartView {
     ctx.fillStyle = 'rgba(0,0,0,0.84)';
     ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = 'source-over';
-    if (!this.windLayer || this.moving) {
+    if (!this.windLayer || this.moving || !this.ready) {
       if (!this.windLayer) ctx.clearRect(0, 0, W, H);
       return;
     }
-    const n = Math.round(Math.min(1500, (this.el.clientWidth * this.el.clientHeight) / 950));
+    const now = performance.now();
+    if (!this.field || now - this.fAt > 1500 || Math.abs(f.windT - this.fWindT) > 0.2) this.buildField(f.wind, f.windT);
+    const fd = this.field!;
+    const cols = this.fCols;
+    const C = this.CELL;
+    const area = this.el.clientWidth * this.el.clientHeight;
+    const n = Math.round(LITE ? Math.min(550, area / 1700) : Math.min(1400, area / 1000));
     while (this.particles.length < n) this.particles.push(this.spawn());
-    // déplacement à l'écran : proportionnel à la force du vent, indépendant du zoom
-    const pxPerKnot = 0.55 * dpr * Math.min(2, dt * 60);
-    ctx.lineWidth = 1.3 * dpr;
-    ctx.lineCap = 'round';
+    if (this.particles.length > n) this.particles.length = n;
+    const step = Math.min(2, dt * 60);
+    // quatre paquets selon la force du vent : quatre tracés seulement par image
+    const paths = [new Path2D(), new Path2D(), new Path2D(), new Path2D()];
+    const maxX = this.el.clientWidth;
+    const maxY = this.el.clientHeight;
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
-      const [u, v] = f.wind.at(p.lon, p.lat, f.windT);
-      const s = Math.hypot(u, v);
-      const a = this.map.project([p.lon, p.lat]);
-      const x0 = a.x * dpr;
-      const y0 = a.y * dpr;
-      const x1 = x0 + u * pxPerKnot * 0.35;
-      const y1 = y0 - v * pxPerKnot * 0.35;
-      const ll = this.map.unproject([x1 / dpr, y1 / dpr]);
-      p.lon = ll.lng;
-      p.lat = ll.lat;
-      p.age++;
-      if (p.age > p.life || x1 < 0 || y1 < 0 || x1 > W || y1 > H) {
+      const x = p.lon;
+      const y = p.lat;
+      const gi = Math.min(cols - 2, Math.max(0, (x / C) | 0));
+      const gj = Math.min(this.fRows - 2, Math.max(0, (y / C) | 0));
+      const fx = x / C - gi;
+      const fy = y / C - gj;
+      const o00 = (gj * cols + gi) * 3;
+      const o10 = o00 + 3;
+      const o01 = o00 + cols * 3;
+      const o11 = o01 + 3;
+      if (fd[o00 + 2] < 0 || fd[o10 + 2] < 0 || fd[o01 + 2] < 0 || fd[o11 + 2] < 0) {
         this.particles[i] = this.spawn();
         continue;
       }
-      const alpha = (0.14 + Math.min(1, s / 22) * 0.46) * Math.min(1, p.age / 8) * Math.min(1, (p.life - p.age) / 10);
-      ctx.strokeStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
-      ctx.beginPath();
-      ctx.moveTo(x0, y0);
-      ctx.lineTo(x1, y1);
-      ctx.stroke();
+      const lerp = (k: number) => (fd[o00 + k] * (1 - fx) + fd[o10 + k] * fx) * (1 - fy) + (fd[o01 + k] * (1 - fx) + fd[o11 + k] * fx) * fy;
+      const dx = lerp(0) * step;
+      const dy = lerp(1) * step;
+      const sp = lerp(2);
+      const x1 = x + dx;
+      const y1 = y + dy;
+      p.lon = x1;
+      p.lat = y1;
+      p.age++;
+      if (p.age > p.life || x1 < 0 || y1 < 0 || x1 > maxX || y1 > maxY) {
+        this.particles[i] = this.spawn();
+        continue;
+      }
+      const path = paths[sp < 8 ? 0 : sp < 14 ? 1 : sp < 22 ? 2 : 3];
+      path.moveTo(x * dpr, y * dpr);
+      path.lineTo(x1 * dpr, y1 * dpr);
     }
+    ctx.lineWidth = 1.3 * dpr;
+    ctx.lineCap = 'round';
+    const alpha = [0.2, 0.32, 0.45, 0.6];
+    for (let k = 0; k < 4; k++) {
+      ctx.strokeStyle = `rgba(255,255,255,${alpha[k]})`;
+      ctx.stroke(paths[k]);
+    }
+  }
+
+  /* ---------- cercle de cap autour du bateau ---------- */
+  private ring: HTMLDivElement | null = null;
+  private ringState = { pos: null as LonLat | null, hdg: 0, twd: 0, tws: 0, pending: null as number | null, sail: 'foc' as SailId, show: false };
+  private ringKey = '';
+  /** appelé quand on tire la poignée (cap vrai), et au relâché */
+  onRingDrag: ((hdg: number, done: boolean) => void) | null = null;
+  onRingOk: (() => void) | null = null;
+  onRingCancel: (() => void) | null = null;
+
+  /** Données du cercle de cap : position et cap du bateau, vent, consigne en cours. */
+  setRing(d: { pos: LonLat; hdg: number; twd: number; tws: number; pending: number | null; sail: SailId } | null) {
+    if (!d) {
+      this.ringState.show = false;
+      if (this.ring) this.ring.hidden = true;
+      return;
+    }
+    Object.assign(this.ringState, d, { show: true });
+    if (!this.ring) this.makeRing();
+    this.drawRing();
+  }
+
+  private makeRing() {
+    const el = document.createElement('div');
+    el.className = 'hring';
+    el.innerHTML = `<svg viewBox="-130 -130 260 260" aria-label="Cap : tire la poignée pour choisir la direction">
+      <g data-sect></g>
+      <circle r="92" class="band"/>
+      <g data-ticks></g>
+      <line data-cur x1="0" y1="0" x2="0" y2="-92" class="cur"/>
+      <line data-pend x1="0" y1="0" x2="0" y2="-92" class="pend"/>
+      <g data-wind class="wind"><path d="M0 -128 L0 -104 M-6 -112 L0 -102 L6 -112"/><text y="-116" x="10" data-wtxt></text></g>
+      <g data-knob class="knob"><circle r="13"/><text dy="4" data-ktxt></text></g>
+      <circle r="92" class="hit"/>
+    </svg>
+    <div class="hr-ok" data-hrok hidden><button type="button" class="ok" data-ok>OK</button><button type="button" class="x" data-x aria-label="Annuler">✕</button></div>`;
+    this.el.appendChild(el);
+    this.ring = el;
+    el.querySelector('[data-ok]')!.addEventListener('click', () => this.onRingOk?.());
+    el.querySelector('[data-x]')!.addEventListener('click', () => this.onRingCancel?.());
+    // graduations, une fois
+    const ticks: string[] = [];
+    for (let a = 0; a < 360; a += 10) {
+      const r0 = a % 90 === 0 ? 80 : a % 30 === 0 ? 84 : 87;
+      const s = Math.sin((a * Math.PI) / 180);
+      const c = -Math.cos((a * Math.PI) / 180);
+      ticks.push(`<line x1="${(s * r0).toFixed(1)}" y1="${(c * r0).toFixed(1)}" x2="${(s * 92).toFixed(1)}" y2="${(c * 92).toFixed(1)}"/>`);
+    }
+    ticks.push('<text x="0" y="-66" class="n">N</text><text x="68" y="4" class="c">E</text><text x="0" y="74" class="c">S</text><text x="-68" y="4" class="c">O</text>');
+    el.querySelector('[data-ticks]')!.innerHTML = ticks.join('');
+    const svg = el.querySelector('svg')!;
+    const hit = el.querySelector<SVGCircleElement>('.hit')!;
+    const angleAt = (e: PointerEvent) => {
+      const r = svg.getBoundingClientRect();
+      const x = e.clientX - (r.left + r.width / 2);
+      const y = e.clientY - (r.top + r.height / 2);
+      return ((Math.atan2(x, -y) * 180) / Math.PI + 360) % 360;
+    };
+    let on = false;
+    hit.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hit.setPointerCapture(e.pointerId);
+      on = true;
+      el.classList.add('drag');
+      this.onRingDrag?.(Math.round(angleAt(e)), false);
+    });
+    hit.addEventListener('pointermove', (e) => {
+      if (on) this.onRingDrag?.(Math.round(angleAt(e)), false);
+    });
+    const end = (e: PointerEvent) => {
+      if (!on) return;
+      on = false;
+      el.classList.remove('drag');
+      this.onRingDrag?.(Math.round(angleAt(e)), true);
+    };
+    hit.addEventListener('pointerup', end);
+    hit.addEventListener('pointercancel', end);
+  }
+
+  private drawRing() {
+    const el = this.ring;
+    const st = this.ringState;
+    if (!el) return;
+    const rot = (n: Element | null, a: number) => n?.setAttribute('transform', `rotate(${a.toFixed(1)})`);
+    rot(el.querySelector('[data-cur]'), st.hdg);
+    const pend = el.querySelector<SVGLineElement>('[data-pend]')!;
+    const knob = el.querySelector<SVGGElement>('[data-knob]')!;
+    const ka = st.pending ?? st.hdg;
+    pend.style.display = st.pending === null ? 'none' : '';
+    rot(pend, ka);
+    const kr = (ka * Math.PI) / 180;
+    knob.setAttribute('transform', `translate(${(Math.sin(kr) * 92).toFixed(1)} ${(-Math.cos(kr) * 92).toFixed(1)})`);
+    knob.classList.toggle('on', st.pending !== null);
+    el.querySelector('[data-ktxt]')!.textContent = String(Math.round(ka)).padStart(3, '0');
+    const okBox = el.querySelector<HTMLElement>('[data-hrok]')!;
+    okBox.hidden = st.pending === null;
+    if (st.pending !== null) el.querySelector('[data-ok]')!.textContent = `OK ${String(Math.round(st.pending)).padStart(3, '0')}°`;
+    rot(el.querySelector('[data-wind]'), st.twd);
+    const wt = el.querySelector('[data-wtxt]')!;
+    wt.textContent = `${Math.round(st.tws)} nds`;
+    wt.setAttribute('transform', `rotate(${(-st.twd).toFixed(1)} 10 -116)`);
+    // secteurs : la meilleure voile pour chaque cap, et la zone où le bateau ne remonte pas
+    const key = `${Math.round(st.twd / 3)}.${Math.round(st.tws)}`;
+    if (key !== this.ringKey) {
+      this.ringKey = key;
+      const arcs: string[] = [];
+      const R = 104;
+      const seg = (a0: number, a1: number, color: string, cls: string) => {
+        const p = (a: number) => `${(Math.sin((a * Math.PI) / 180) * R).toFixed(1)} ${(-Math.cos((a * Math.PI) / 180) * R).toFixed(1)}`;
+        arcs.push(`<path d="M${p(a0)} A${R} ${R} 0 0 1 ${p(a1)}" stroke="${color}" class="${cls}"/>`);
+      };
+      let start = 0;
+      let prev = '';
+      const kind = (h: number) => {
+        const twa = ((st.twd - h + 540) % 360) - 180;
+        return Math.abs(twa) < 38 ? 'nogo' : bestSail(twa, st.tws);
+      };
+      for (let a = 0; a <= 360; a += 4) {
+        const k = a === 360 ? '' : kind(a);
+        if (k !== prev) {
+          if (prev) seg(start, a, prev === 'nogo' ? '#ff5d6c' : SAIL_COLOR[prev as SailId], prev === 'nogo' ? 'ng' : 'sl');
+          start = a;
+          prev = k;
+        }
+      }
+      el.querySelector('[data-sect]')!.innerHTML = arcs.join('');
+    }
+  }
+
+  /** Le cercle suit le bateau à l'écran. */
+  private placeRing() {
+    const el = this.ring;
+    const st = this.ringState;
+    if (!el) return;
+    const show = st.show && !!st.pos && this.ready && this.map.getZoom() >= 4.5;
+    el.hidden = !show;
+    if (!show) return;
+    const p = this.map.project(st.pos!);
+    el.style.transform = `translate(${(p.x - 130).toFixed(1)}px, ${(p.y - 130).toFixed(1)}px)`;
   }
 
   /** Distance du centre de la carte au bateau (milles), pour proposer de recentrer. */
