@@ -365,6 +365,8 @@ export function startSleep(b: Boat): boolean {
 export interface Projection {
   pts: LonLat[]; // un point toutes les 30 min
   dt: number;
+  /** prochaine marque à passer à la fin de la projection */
+  mark: number;
 }
 
 /**
@@ -389,5 +391,5 @@ export function projectBoat(src: Boat, t0: number, wind: WindSource, hours: numb
     }
     if (b.finished !== null) break;
   }
-  return { pts, dt: 0.5 };
+  return { pts, dt: 0.5, mark: b.mark };
 }

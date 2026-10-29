@@ -48,6 +48,8 @@ export interface HudHandlers {
   /** ajoute un ordre : heure locale « hh:mm », cap vrai */
   routeAdd(hhmm: string, hdg: number): void;
   routeClear(): void;
+  /** montre une étape du routage sur la carte */
+  routeFocus(i: number): void;
 }
 
 /** Une ligne du programme de routage, prête à afficher. */
@@ -58,6 +60,28 @@ export interface RouteRow {
   twa: string;
   past: boolean;
   next: boolean;
+  /** manœuvre : départ (cap actuel), virement, empannage, changement de cap ou de voile */
+  kind: 'start' | 'tack' | 'gybe' | 'turn' | 'sail';
+  /** allure en clair : au près, vent de travers… */
+  pace: string;
+  /** position dans la frise (0 à 1) */
+  at: number;
+}
+
+/** Résumé du routage : chiffres clés et frise. */
+export interface RouteView {
+  hours: number;
+  sailed: string;
+  gained: string;
+  target: string;
+  vsCap: { text: string; good: boolean } | null;
+  ticks: { at: number; label: string }[];
+  rows: RouteRow[];
+  following: boolean;
+  source: string;
+  defaultTime: string;
+  /** ligne sélectionnée (index) */
+  sel: number;
 }
 
 type AlertAction = 'route' | 'sleep' | 'repair' | 'bear' | 'sail';
@@ -150,27 +174,43 @@ export class Hud {
       </nav>
 
       <div class="card panel rt" data-panel="route" hidden>
-        <div class="p-head"><span class="eyebrow">Routage · météo GFS</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
-        <div class="rt-h">
-          <span class="rt-l">Calculer sur</span>
-          <div class="seg mini" role="group" aria-label="Horizon du routage">${[6, 12, 24, 48].map((h) => `<button type="button" data-rt-h="${h}" aria-pressed="${h === 24}">${h} h</button>`).join('')}</div>
+        <div class="p-head"><span class="eyebrow">Routage</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
+        <div class="rt-ask">
+          <p class="rt-intro" data-rt-intro>Le routeur cherche la route la plus rapide sur les prévisions de vent, en passant par les marques. Choisis jusqu’où il regarde :</p>
+          <div class="rt-hz" role="group" aria-label="Horizon du routage">${(
+            [
+              [6, 'court terme'],
+              [12, 'demi-journée'],
+              [24, 'une journée'],
+              [48, 'deux jours'],
+            ] as const
+          )
+            .map(([h, b]) => `<button type="button" data-rt-h="${h}" aria-pressed="${h === 24}"><b>${h} h</b><small>${b}</small></button>`)
+            .join('')}</div>
+          <button type="button" class="rt-go" data-rt-go><span>Calculer la meilleure route</span><i data-rt-bar></i></button>
         </div>
-        <button type="button" class="rt-go" data-rt-go><span>Calculer la route</span><i data-rt-bar></i></button>
         <div class="rt-res" data-rt-res hidden>
-          <p class="rt-sum" data-rt-sum></p>
-          <ol class="rt-list" data-rt-list></ol>
-          <div class="rt-add">
-            <span class="rt-l">Ajouter un ordre</span>
-            <label>à <input type="time" data-rt-time step="900"></label>
-            <label>cap <input type="number" min="0" max="359" data-rt-hdg inputmode="numeric">°</label>
-            <button type="button" class="pill" data-rt-add>Ajouter</button>
+          <div class="rt-kpi">
+            <div><b data-rk="sailed">—</b><small>parcourus</small></div>
+            <div><b data-rk="gained">—</b><small data-rk="target">vers la marque</small></div>
+            <div data-rk-vs><b data-rk="vs">—</b><small>vs garder ton cap</small></div>
           </div>
-          <div class="rt-foot">
-            <button type="button" class="rt-follow" data-rt-follow>Le pilote Auto suit ce programme</button>
-            <button type="button" class="pill ghost" data-rt-clear>Effacer</button>
-          </div>
+          <div class="rt-tl" data-rt-tl aria-hidden="true"></div>
+          <ol class="rt-steps" data-rt-steps></ol>
+          <button type="button" class="rt-follow" data-rt-follow>Suivre cette route</button>
+          <p class="rt-src" data-rt-src></p>
+          <details class="rt-edit">
+            <summary>Ajuster les heures</summary>
+            <ol class="rt-list" data-rt-list></ol>
+            <div class="rt-add">
+              <span class="rt-l">Ajouter un ordre</span>
+              <label>à <input type="time" data-rt-time step="900"></label>
+              <label>cap <input type="number" min="0" max="359" data-rt-hdg inputmode="numeric">°</label>
+              <button type="button" class="pill" data-rt-add>Ajouter</button>
+            </div>
+            <button type="button" class="pill ghost rt-clear" data-rt-clear>Effacer le routage</button>
+          </details>
         </div>
-        <p class="p-note" data-rt-note>Le routage cherche la route la plus rapide vers la prochaine marque puis l’arrivée, sur les prévisions de vent. Chaque ligne est un ordre de barre à une heure précise (heure locale) : décale-les, supprimes-en, ajoutes-en, puis confie le programme au pilote Auto.</p>
       </div>
 
       <div class="card panel fc" data-panel="fc" data-fc-panel hidden>
@@ -433,8 +473,18 @@ export class Hud {
       b.addEventListener('click', () => {
         rtH = Number(b.dataset.rtH);
         r.querySelectorAll<HTMLButtonElement>('[data-rt-h]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        // un horizon choisi après un premier calcul relance directement le routage
+        if (!q(r, '[data-rt-res]').hidden) this.h.route(rtH);
       }),
     );
+    q(r, '[data-rt-steps]').addEventListener('click', (e) => {
+      const li = (e.target as HTMLElement).closest<HTMLElement>('li[data-i]');
+      if (li) this.h.routeFocus(Number(li.dataset.i));
+    });
+    q(r, '[data-rt-tl]').addEventListener('click', (e) => {
+      const m = (e.target as HTMLElement).closest<HTMLElement>('[data-i]');
+      if (m) this.h.routeFocus(Number(m.dataset.i));
+    });
     q(r, '[data-rt-go]').addEventListener('click', () => this.h.route(rtH));
     q(r, '[data-rt-follow]').addEventListener('click', () => this.h.routeFollow(!this.rtFollowing));
     q(r, '[data-rt-clear]').addEventListener('click', () => this.h.routeClear());
@@ -607,32 +657,55 @@ export class Hud {
     q(this.root, '[data-rt-bar]').style.width = `${Math.round((k ?? 0) * 100)}%`;
   }
 
-  /** Programme de routage : résumé, ordres, état du suivi. null = aucun programme. */
-  setRoute(d: { summary: string; rows: RouteRow[]; following: boolean; defaultTime: string } | null) {
+  /** Routage : chiffres clés, frise des manœuvres, étapes en clair, suivi. null = pas de routage. */
+  setRoute(d: RouteView | null) {
     const r = this.root;
     this.rtFollowing = !!d?.following;
     q(r, '[data-rt-res]').hidden = !d;
-    q(r, '[data-rt-note]').hidden = !!d;
+    q(r, '[data-rt-intro]').hidden = !!d;
     q(r, '[data-rt-badge]').hidden = !d?.following;
-    if (!d) {
-      q(r, '[data-rt-go] span').textContent = 'Calculer la route';
-      return;
+    q(r, '[data-rt-go] span').textContent = d ? 'Recalculer' : 'Calculer la meilleure route';
+    r.querySelector('.rt')!.classList.toggle('has', !!d);
+    if (!d) return;
+    q(r, '[data-rk="sailed"]').textContent = d.sailed;
+    q(r, '[data-rk="gained"]').textContent = d.gained;
+    q(r, '[data-rk="target"]').textContent = `vers ${d.target}`;
+    const vs = q(r, '[data-rk-vs]');
+    vs.hidden = !d.vsCap;
+    if (d.vsCap) {
+      q(r, '[data-rk="vs"]').textContent = d.vsCap.text;
+      vs.className = d.vsCap.good ? 'good' : '';
     }
-    q(r, '[data-rt-sum]').innerHTML = d.summary;
-    q(r, '[data-rt-list]').innerHTML = d.rows.length
+    const KIND: Record<RouteRow['kind'], string> = { start: 'Cap de départ', tack: 'Virement de bord', gybe: 'Empannage', turn: 'Changement de cap', sail: 'Changement de voile' };
+    const ICONK: Record<RouteRow['kind'], string> = { start: '▶', tack: '⤺', gybe: '⤻', turn: '↗', sail: '⛵' };
+    // frise : maintenant → horizon, graduations, une pastille par manœuvre
+    q(r, '[data-rt-tl]').innerHTML = `<i class="bar"></i>${d.ticks.map((t) => `<span class="tk" style="left: ${(t.at * 100).toFixed(1)}%">${esc(t.label)}</span>`).join('')}${d.rows
+      .map((o, i) => (o.at < 0 || o.at > 1 ? '' : `<b class="mk ${o.kind}${i === d.sel ? ' sel' : ''}${o.past ? ' past' : ''}" style="left: ${(o.at * 100).toFixed(1)}%" data-i="${i}" title="${esc(o.when)} · ${esc(KIND[o.kind])}">${ICONK[o.kind]}</b>`))
+      .join('')}`;
+    q(r, '[data-rt-steps]').innerHTML = d.rows.length
       ? d.rows
           .map(
-            (o, i) => `<li class="${o.past ? 'past' : ''}${o.next ? ' next' : ''}">
-          <time>${esc(o.when)}</time>
-          <span class="o"><b>${String(o.hdg).padStart(3, '0')}°</b><small>${esc(o.sail)} · ${esc(o.twa)}</small></span>
-          <span class="b"><button type="button" data-i="${i}" data-act="-30" aria-label="30 min plus tôt">−30′</button><button type="button" data-i="${i}" data-act="30" aria-label="30 min plus tard">+30′</button><button type="button" data-i="${i}" data-act="del" class="del" aria-label="Supprimer l’ordre">${ICON_CLOSE}</button></span>
+            (o, i) => `<li data-i="${i}" class="${o.kind}${o.past ? ' past' : ''}${o.next ? ' next' : ''}${i === d.sel ? ' sel' : ''}">
+          <span class="ic">${ICONK[o.kind]}</span>
+          <span class="tx"><small>${esc(o.when)}${o.next && d.following ? ' · prochain' : ''}</small><b>${esc(KIND[o.kind])}</b><em>cap ${String(o.hdg).padStart(3, '0')}° · ${esc(o.sail)} · ${esc(o.pace)}</em></span>
         </li>`,
           )
           .join('')
-      : '<li class="empty">Aucun ordre : le pilote garde le cap actuel.</li>';
+      : '<li class="empty">Aucun ordre : le bateau garde son cap.</li>';
+    // réglage fin des heures
+    q(r, '[data-rt-list]').innerHTML = d.rows
+      .map(
+        (o, i) => `<li class="${o.past ? 'past' : ''}">
+          <time>${esc(o.when)}</time>
+          <span class="o"><b>${String(o.hdg).padStart(3, '0')}°</b><small>${esc(KIND[o.kind])}</small></span>
+          <span class="b"><button type="button" data-i="${i}" data-act="-30" aria-label="30 min plus tôt">−30′</button><button type="button" data-i="${i}" data-act="30" aria-label="30 min plus tard">+30′</button><button type="button" data-i="${i}" data-act="del" class="del" aria-label="Supprimer l’ordre">${ICON_CLOSE}</button></span>
+        </li>`,
+      )
+      .join('');
     const f = q(r, '[data-rt-follow]');
-    f.textContent = d.following ? 'Programme suivi · reprendre la main' : 'Le pilote Auto suit ce programme';
+    f.innerHTML = d.following ? '<b>Le pilote suit cette route</b><small>Toucher pour reprendre la main</small>' : '<b>Suivre cette route</b><small>Le pilote Auto exécute chaque manœuvre à l’heure</small>';
     f.classList.toggle('on', d.following);
+    q(r, '[data-rt-src]').textContent = d.source;
     const tIn = q<HTMLInputElement>(r, '[data-rt-time]');
     if (!tIn.value) tIn.value = d.defaultTime;
   }
