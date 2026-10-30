@@ -108,6 +108,7 @@ export class Game {
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.race) saveRace(this.race);
+      else if (!document.hidden) this.refreshWind();
     });
     window.addEventListener('pagehide', () => {
       if (this.race) saveRace(this.race);
@@ -118,8 +119,24 @@ export class Game {
     void loadWindGrid().then(() => {
       if (this.screen === 'menu') this.renderMenuUI();
     });
+    // onglet ouvert pendant des jours : on va chercher chaque nouveau run GFS
+    setInterval(() => this.refreshWind(), 10 * 60000);
     this.showMenu();
     requestAnimationFrame((t) => this.loop(t));
+  }
+
+  /** Recharge les prévisions si elles ont plus de 3 h ; la course en cours passe dessus tout de suite. */
+  private refreshWind() {
+    const before = windGrid();
+    void loadWindGrid().then((g) => {
+      if (!g) return;
+      if (g !== before && this.screen === 'menu') this.renderMenuUI();
+      if (g !== before) this.garageUI?.fillEta();
+      if (this.race?.setWindGrid(g)) {
+        this.fcDirty = true;
+        this.hud?.say(null, 'Météo : nouvelles prévisions GFS, la course navigue dessus.', 'sys');
+      }
+    });
   }
 
   /* ---------- écrans ---------- */

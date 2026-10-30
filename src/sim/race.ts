@@ -6,7 +6,7 @@ import { LonLat, Rng, dist } from './geo';
 import { bestHeading, decideEvery, nextTarget } from './router';
 import { routeTimes } from './solo';
 import { SyntheticWind, WindSource, windFrom } from './wind';
-import { GridWind, windGrid } from './gfsWind';
+import { GridWind, WindGrid, windGrid } from './gfsWind';
 
 export interface BotDef {
   id: string;
@@ -100,7 +100,7 @@ export function makeBoat(o: Partial<Boat> & Pick<Boat, 'id' | 'name' | 'color' |
 
 export class Race {
   readonly def: RaceDef;
-  readonly wind: WindSource;
+  wind: WindSource;
   readonly rng: Rng;
   t = 0;
   boats: Boat[];
@@ -114,7 +114,8 @@ export class Race {
   constructor(def: RaceDef, setup: Setup, saved?: SavedRace) {
     this.def = def;
     this.setup = setup;
-    this.originUTC = saved?.origin ?? (def.fleet ? def.startUTC : Date.now());
+    // course officielle : toujours l'heure du programme, pour qu'un départ reporté s'applique aussi aux sauvegardes
+    this.originUTC = def.fleet ? def.startUTC : (saved?.origin ?? Date.now());
     const grid = def.realWind ? windGrid() : null;
     this.wind = grid ? new GridWind(grid, def.startUTC, def.windPhase) : new SyntheticWind(def.windPhase);
     if (saved) {
@@ -150,6 +151,13 @@ export class Race {
   /** Vent réel GFS ? */
   get realWind(): boolean {
     return this.wind instanceof GridWind;
+  }
+
+  /** Nouvelles prévisions : la course navigue dessus tout de suite. Faux si rien ne change (déjà dessus, ou vent simulé). */
+  setWindGrid(g: WindGrid): boolean {
+    if (!this.def.realWind || (this.wind instanceof GridWind && this.wind.grid === g)) return false;
+    this.wind = new GridWind(g, this.def.startUTC, this.def.windPhase);
+    return true;
   }
 
   private createBoats(setup: Setup): Boat[] {

@@ -2,10 +2,11 @@ import snapshot from '../public/wind/gfs-snapshot.json?raw';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RHUM } from '../src/data/races';
 import { DEFAULT_SETUP, SLOTS, Setup } from '../src/data/garage';
-import { IMOCA_RHUM_2026 } from '../src/data/fleet';
+import { IMOCA_RHUM_2026, genPerf } from '../src/data/fleet';
 import { GridWind, decodeGrid, setWindGrid } from '../src/sim/gfsWind';
 import { Race } from '../src/sim/race';
 import { realEta } from '../src/sim/eta';
+import { routeTimes } from '../src/sim/solo';
 import { applyLive, matchFleet } from '../src/sim/live';
 import { startRepair } from '../src/sim/boat';
 
@@ -43,15 +44,13 @@ describe('Route du Rhum sur la vraie météo', () => {
     expect(Math.min(...days)).toBeLessThan(22);
   });
 
-  it('les bateaux à dérives droites arrivent en moyenne après les foilers récents', { timeout: 120000 }, () => {
-    const race = new Race(RHUM, DEFAULT_SETUP);
-    race.step(24 * 30, () => {});
-    const avg = (gen: string) => {
-      const ids = IMOCA_RHUM_2026.filter((f) => f.gen === gen).map((f) => f.id);
-      const bs = race.boats.filter((b) => b.fleetId && ids.includes(b.fleetId));
-      return bs.reduce((a, b) => a + (b.finished ?? 999), 0) / bs.length;
-    };
-    expect(avg('dagger')).toBeGreaterThan(avg('new'));
+  it('à route égale, un IMOCA à dérives droites arrive après un foiler récent', { timeout: 60000 }, () => {
+    // pas sur la flotte entière : selon la météo, les options de route s'écartent de plusieurs jours,
+    // plus que les générations de bateaux, et chaque bot tire sa route au hasard
+    const w = new GridWind(grid, RHUM.startUTC);
+    const dagger = routeTimes(RHUM, genPerf('dagger'), w);
+    const recent = routeTimes(RHUM, genPerf('new'), w);
+    dagger.forEach((t, i) => expect(t, `route ${i}`).toBeGreaterThan(recent[i]));
   });
 
   it('une option de préparation ne change le temps de course que de quelques dixièmes de pour-cent', { timeout: 60000 }, () => {

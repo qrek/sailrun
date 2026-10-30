@@ -1,3 +1,4 @@
+import { RHUM } from '../data/races';
 import { D2R } from './geo';
 import { SyntheticWind, WindSource } from './wind';
 
@@ -32,8 +33,12 @@ export interface WindGrid {
   v: Int16Array;
 }
 
-/** Zone de course : du golfe de Gascogne aux Antilles. 532 points = une seule requête sous la limite gratuite d'Open-Meteo. */
-export const GRID = { lat0: 7.5, dlat: 2.5, nlat: 19, lon0: -67.5, dlon: 2.5, nlon: 28, dt: 3 };
+/**
+ * Zone de course : du golfe de Gascogne aux Antilles, jusqu'à 2,5° E pour que le départ de Saint-Malo
+ * ne soit pas au bord (le vent y serait mêlé de vent simulé). 551 points = une seule requête sous la limite
+ * gratuite d'Open-Meteo.
+ */
+export const GRID = { lat0: 7.5, dlat: 2.5, nlat: 19, lon0: -67.5, dlon: 2.5, nlon: 29, dt: 3 };
 
 export class GridWind implements WindSource {
   private fallback: SyntheticWind;
@@ -114,10 +119,32 @@ export class GridWind implements WindSource {
 const CACHE_KEY = 'sailgame.gfs.v1';
 const MAX_AGE = 3 * 3600000; // GFS sort toutes les 6 h : on rafraîchit toutes les 3 h
 
-function gridPoints(): [number, number][] {
+export function gridPoints(): [number, number][] {
   const pts: [number, number][] = [];
   for (let j = 0; j < GRID.nlat; j++) for (let i = 0; i < GRID.nlon; i++) pts.push([GRID.lat0 + j * GRID.dlat, GRID.lon0 + i * GRID.dlon]);
   return pts;
+}
+
+const DAY = 86400000;
+/** 14 jours de données par requête : au-delà, Open-Meteo compte plusieurs appels. */
+const WINDOW_DAYS = 14;
+/** Jours de prévisions gardés devant : le curseur des prévisions va à 5 jours. */
+const AHEAD_DAYS = 6;
+
+/**
+ * Requête Open-Meteo pour ces points. Une fois la Route du Rhum partie, les données remontent jusqu'au jour
+ * du départ (8 jours au plus) : le rattrapage après une absence, et les concurrents simulés quand on arrive
+ * en retard, naviguent dans le vent qu'il a fait. Le reste de la fenêtre, ce sont les prévisions.
+ */
+export function openMeteoUrl(pts: [number, number][], now = Date.now()): string {
+  const past = Math.max(0, Math.min(WINDOW_DAYS - AHEAD_DAYS, Math.floor(now / DAY) - Math.floor(RHUM.startUTC / DAY)));
+  return (
+    'https://api.open-meteo.com/v1/gfs?latitude=' +
+    pts.map((p) => p[0]).join(',') +
+    '&longitude=' +
+    pts.map((p) => p[1]).join(',') +
+    `&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn&past_days=${past}&forecast_days=${WINDOW_DAYS - past}&temporal_resolution=hourly_3&timezone=GMT`
+  );
 }
 
 interface OMPoint {
@@ -150,13 +177,7 @@ async function fetchOpenMeteo(signal?: AbortSignal): Promise<WindGrid> {
   const parts = [pts];
   const res = await Promise.all(
     parts.map(async (part) => {
-      const url =
-        'https://api.open-meteo.com/v1/gfs?latitude=' +
-        part.map((p) => p[0]).join(',') +
-        '&longitude=' +
-        part.map((p) => p[1]).join(',') +
-        '&hourly=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn&forecast_days=14&temporal_resolution=hourly_3&timezone=GMT';
-      const r = await fetch(url, { signal });
+      const r = await fetch(openMeteoUrl(part), { signal });
       if (!r.ok) throw new Error(`Open-Meteo ${r.status}`);
       return (await r.json()) as OMPoint[];
     }),
@@ -192,11 +213,16 @@ let pending: Promise<WindGrid | null> | null = null;
 /** La grille déjà chargée, s'il y en a une. */
 export const windGrid = () => current;
 
+const fresh = (g: WindGrid) => Date.now() - g.meta.fetched < MAX_AGE;
+
 /**
- * Charge les prévisions : cache local s'il est frais, sinon Open-Meteo, sinon l'instantané
- * embarqué dans le jeu. Ne rejette jamais : null = on reste sur le vent synthétique.
+ * Charge les prévisions : celles en mémoire ou le cache local s'ils sont frais, sinon Open-Meteo,
+ * sinon les plus récentes qu'on ait, sinon l'instantané embarqué dans le jeu. À rappeler de temps
+ * en temps : tant que les prévisions sont fraîches, ça ne coûte rien.
+ * Ne rejette jamais : null = on reste sur le vent synthétique.
  */
 export function loadWindGrid(base = import.meta.env?.BASE_URL ?? '/'): Promise<WindGrid | null> {
+  if (current && fresh(current)) return Promise.resolve(current);
   if (pending) return pending;
   pending = (async () => {
     let cached: WindGrid | null = null;
@@ -206,7 +232,7 @@ export function loadWindGrid(base = import.meta.env?.BASE_URL ?? '/'): Promise<W
     } catch {
       cached = null;
     }
-    if (cached && Date.now() - cached.meta.fetched < MAX_AGE) return (current = cached);
+    if (cached && fresh(cached)) return (current = cached);
     try {
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), 15000);
@@ -221,7 +247,8 @@ export function loadWindGrid(base = import.meta.env?.BASE_URL ?? '/'): Promise<W
     } catch {
       /* hors ligne ou API indisponible */
     }
-    if (cached) return (current = cached);
+    if (cached && (!current || cached.meta.fetched > current.meta.fetched)) current = cached;
+    if (current) return current;
     try {
       const r = await fetch(`${base}wind/gfs-snapshot.json`);
       if (r.ok) return (current = decodeGrid(await r.text()));
@@ -229,12 +256,14 @@ export function loadWindGrid(base = import.meta.env?.BASE_URL ?? '/'): Promise<W
       /* rien */
     }
     return null;
-  })();
+  })().finally(() => {
+    pending = null;
+  });
   return pending;
 }
 
 /** Pour les tests : injecte une grille. */
 export function setWindGrid(g: WindGrid | null) {
   current = g;
-  pending = Promise.resolve(g);
+  pending = null;
 }
