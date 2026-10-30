@@ -433,6 +433,7 @@ export class Game {
         this.syncControls();
       },
       devSea: (o) => Object.assign(this.immersive.test, o),
+      devLife: (kind) => this.immersive.meet(kind),
       view: (m) => this.setView(m),
       menu: () => this.showMenu(),
       say: (text) => {

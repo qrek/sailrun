@@ -30,6 +30,8 @@ export interface HudHandlers {
   pause(): void;
   /** mode test : vent et houle imposés à la vue immersive (null = ceux de la course) */
   devSea(o: { tws: number | null; twa: number | null; swell: number }): void;
+  /** mode test : fait venir des dauphins ou une baleine tout de suite */
+  devLife(kind: 'dolphins' | 'whale'): void;
   view(mode: ViewMode): void;
   menu(): void;
   say(text: string): void;
@@ -162,7 +164,7 @@ export class Hud {
         <label><span>Vent</span><input type="range" data-dev="tws" min="0" max="45" step="1" aria-label="Force du vent (nœuds)" /><b data-dev-v="tws"></b></label>
         <label><span>Angle</span><input type="range" data-dev="twa" min="-180" max="180" step="5" aria-label="Angle au vent (degrés)" /><b data-dev-v="twa"></b></label>
         <label><span>Houle</span><input type="range" data-dev="swell" min="0.2" max="3" step="0.1" value="1" aria-label="Taille de la houle" /><b data-dev-v="swell"></b></label>
-        <button type="button" data-dev-reset>Revenir au vent de la course</button>
+        <div class="devbtns"><button type="button" data-dev-reset aria-label="Revenir au vent de la course">Vent de la course</button><button type="button" data-dev-life="dolphins">Dauphins</button><button type="button" data-dev-life="whale">Baleine</button></div>
       </div>
 
       <nav class="rail" aria-label="Outils">
@@ -438,6 +440,9 @@ export class Hud {
         this.h.devSea({ ...this.devSea });
         this.showDevSea();
       }),
+    );
+    r.querySelectorAll<HTMLButtonElement>('[data-dev-life]').forEach((b) =>
+      b.addEventListener('click', () => this.h.devLife(b.dataset.devLife as 'dolphins' | 'whale')),
     );
     q(r, '[data-dev-reset]').addEventListener('click', () => {
       this.devSea = { tws: null, twa: null, swell: 1 };

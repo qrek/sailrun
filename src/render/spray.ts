@@ -163,6 +163,29 @@ export class Spray {
     this.points.geometry.attributes.aLife.needsUpdate = true;
   }
 
+  /**
+   * Une bouffée d'eau en un point (repère du bateau) : éclaboussure d'un dauphin, souffle d'une baleine.
+   * `up` vitesse de montée et `spread` d'écartement (longueurs / s), `size` taille d'une goutte, `life` durée (s),
+   * `mist` part de brume, `alpha` opacité de la brume.
+   */
+  puff(x: number, y: number, z: number, o: { n: number; up: number; spread: number; size: number; life: number; mist?: number; alpha?: number }): void {
+    for (let k = 0; k < o.n; k++) {
+      const i = this.next;
+      this.next = (i + 1) % N;
+      const mist = Math.random() < (o.mist ?? 0.25);
+      const a = Math.random() * 2 * Math.PI;
+      const r = o.spread * Math.sqrt(Math.random());
+      this.pos.set([x + 0.2 * r * Math.cos(a), y + 0.003, z + 0.2 * r * Math.sin(a)], i * 3);
+      this.vel.set([r * Math.cos(a), o.up * (0.6 + 0.4 * Math.random()), r * Math.sin(a)], i * 3);
+      this.age[i] = 0;
+      this.span[i] = o.life * (0.7 + 0.6 * Math.random());
+      this.mist[i] = mist ? 1 : 0;
+      const size = o.size * (0.6 + 0.8 * Math.random()) * (mist ? 2 : 1);
+      const alpha = mist ? (o.alpha ?? 0.14) * (0.8 + 0.4 * Math.random()) : 0.4 + 0.3 * Math.random();
+      this.life.set([0, size, Math.random(), alpha], i * 4);
+    }
+  }
+
   private spawn(hull: Hull, water: SprayInput['water'], spd: number, fast: number, burst: number) {
     const side = Math.random() < 0.5 ? -1 : 1;
     // surtout vers l'étrave

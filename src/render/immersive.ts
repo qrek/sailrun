@@ -3,6 +3,7 @@ import { Boat, boatSpeed } from '../sim/boat';
 import { Hull } from './buoyancy';
 import { Spray } from './spray';
 import { sailAir } from './sailAir';
+import { Kind, Wildlife } from './wildlife';
 import { D2R, NM_PER_DEG } from '../sim/geo';
 import { BoatRig, boatModelVersion, buildBoat, disposeBoat, showSails, trimBoat } from './boatModel';
 import { Engine, InputHandler } from './engine';
@@ -528,6 +529,8 @@ export class ImmersiveView {
   private pmrem: THREE.PMREMGenerator;
   private envScene = new THREE.Scene();
   private spray = new Spray();
+  /** dauphins et baleines, de temps en temps */
+  private wildlife = new Wildlife();
   private navLights: THREE.Mesh[] = [];
 
   private labels: HTMLDivElement;
@@ -573,6 +576,7 @@ export class ImmersiveView {
     this.pmrem = new THREE.PMREMGenerator(engine.renderer);
 
     this.scene.add(this.spray.points);
+    this.scene.add(this.wildlife.group);
 
     // post-traitement : halo lumineux sur les reflets, vignette
     const r = engine.renderer;
@@ -622,6 +626,11 @@ export class ImmersiveView {
   }
 
   /** Remet la caméra derrière le bateau. */
+  /** Fait venir des dauphins ou une baleine tout de suite (mode test). */
+  meet(kind: Kind) {
+    this.wildlife.trigger(kind);
+  }
+
   reset() {
     this.yaw = 0.62;
     this.pitch = 0.1;
@@ -817,6 +826,8 @@ export class ImmersiveView {
     for (const l of this.navLights) l.visible = day < 0.45;
 
     this.updateOthers(me, boats);
+    // dauphins et baleines (leurs éclaboussures et souffles passent par les embruns)
+    this.wildlife.step(dt, T, { spd: me.spd, flow: v, day, water: (x, z) => surfaceAt(this.waves, x, z + tz, T), spray: this.spray });
     // embruns : le vent apparent les emporte (vent réel + vent de la vitesse, même échelle que la mer qui défile)
     const ka = 0.0286 * 1.4;
     this.spray.step(dt, {
