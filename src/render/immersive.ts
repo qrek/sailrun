@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Boat } from '../sim/boat';
 import { D2R, NM_PER_DEG } from '../sim/geo';
-import { BoatRig, boatModelVersion, buildBoat, disposeBoat, trimBoat } from './boatModel';
+import { BoatRig, boatModelVersion, buildBoat, disposeBoat, showSails, trimBoat } from './boatModel';
 import { Engine, InputHandler } from './engine';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -526,6 +526,7 @@ export class ImmersiveView {
       root.position.set(x, waveHeight(this.waves, x, z - this.travel, this.time) - 0.015, z);
       root.rotation.set(0, -(b.hdg - me.hdg) * D2R, 0);
       trimBoat(o.rig, b.twa, b.tws);
+      showSails(o.rig, b, this.time);
       // étiquette au-dessus du mât
       v.set(x, root.position.y + 1.45, z).project(this.camera);
       const tag = o.tag;
@@ -614,6 +615,7 @@ export class ImmersiveView {
     rig.root.rotation.x += (pitch - rig.root.rotation.x) * Math.min(1, dt * 4);
     rig.root.rotation.z += (roll - rig.root.rotation.z) * Math.min(1, dt * 4);
     trimBoat(rig, me.twa, me.tws);
+    showSails(rig, me, this.time);
     for (const l of this.navLights) l.visible = day < 0.45;
 
     this.updateOthers(me, boats);

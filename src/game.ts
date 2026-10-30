@@ -6,7 +6,7 @@ import { WorldView } from './render/world';
 import { ImmersiveView } from './render/immersive';
 import { ChartView } from './render/chart';
 import { distUnit } from './ui/units';
-import { Boat, CP_RADIUS, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, wakeUp } from './sim/boat';
+import { Boat, CP_RADIUS, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, targetSail, wakeUp } from './sim/boat';
 import { LonLat, isLand, norm180, norm360, smooth } from './sim/geo';
 import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
 
@@ -284,6 +284,7 @@ export class Game {
       sleep: () => {
         if (race.player.sleep > 0) return this.wake();
         if (startSleep(race.player)) this.hud?.toast('Sieste de 2 h');
+        else if (race.player.sailTo !== null) this.hud?.toast('Pas de sieste pendant un changement de voile');
       },
       repair: () => {
         if (startRepair(race.player)) this.hud?.toast('Réparation lancée');
@@ -298,13 +299,18 @@ export class Game {
       },
       sail: (id) => {
         const p = race.player;
-        if (p.sail === id) {
-          this.hud?.toast(`${sailName(id)} déjà à poste`);
+        const r = changeSail(p, id);
+        if (!r) {
+          if (p.sailTo === null) this.hud?.toast(`${sailName(id)} déjà à poste`);
+          else if (id === targetSail(p)) this.hud?.toast(p.sailBack ? `Retour au ${sailName(id)} déjà en cours` : `Envoi du ${sailName(id)} déjà en cours`);
+          else this.hud?.toast('Termine ou annule d’abord le changement en cours');
           return;
         }
         this.wake();
         if (p.autoSail) p.autoSail = false;
-        if (changeSail(p, id)) this.hud?.toast(`Envoi du ${sailName(id)} · 15 min`);
+        if (r === 'start') this.hud?.toast(`Envoi du ${sailName(id)} · ${Math.round(p.sailDur * 60)} min`);
+        else if (r === 'cancel') this.hud?.toast(`Annulation : on garde le ${sailName(id)}`);
+        else this.hud?.toast(`Reprise de l’envoi du ${sailName(id)}`);
         this.projClock = 0;
       },
       autoSail: (on) => {
@@ -436,7 +442,8 @@ export class Game {
   private syncRing() {
     const p = this.race?.player;
     if (!p || p.finished !== null || this.immersiveOn) return this.chart.setRing(null);
-    this.chart.setRing({ pos: p.pos, hdg: p.hdg, twd: p.twd, tws: p.tws, pending: this.pendingHdg, sail: p.sail });
+    const change = p.sailTo === null ? null : { from: p.sail, to: p.sailTo, p: p.sailT / p.sailDur, back: p.sailBack };
+    this.chart.setRing({ pos: p.pos, hdg: p.hdg, twd: p.twd, tws: p.tws, pending: this.pendingHdg, sail: p.sail, change });
   }
 
   private updateAutoInfo() {
@@ -628,7 +635,9 @@ export class Game {
     else if (ev === 'repaired') hud.toast('Réparation terminée');
     else if (ev === 'woke') hud.toast('Skipper réveillé');
     else if (ev === 'land') hud.toast('Côte en vue : change de cap !');
-    else if (ev === 'sail') hud.toast(`Voile auto : ${sailName(boat.sail)}`);
+    else if (ev === 'sail') hud.toast(`Voile auto : envoi du ${sailName(boat.sailTo ?? boat.sail)}`);
+    else if (ev === 'sailset') hud.toast(`${sailName(boat.sail)} à poste`);
+    else if (ev === 'sailkept') hud.toast(`Changement annulé : ${sailName(boat.sail)} gardé`);
   }
 
   /* ---------- boucle ---------- */

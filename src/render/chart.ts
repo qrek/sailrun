@@ -19,6 +19,14 @@ import { WindSource } from '../sim/wind';
 const OFM = 'https://tiles.openfreemap.org';
 const SAIL_LABEL: Record<string, string> = Object.fromEntries(SAILS.map((s) => [s.id, s.name.toUpperCase()]));
 const SAIL_COLOR: Record<SailId, string> = { foc: '#22D3EE', code0: '#A78BFA', spi: '#FB7185' };
+/** Changement de voile en cours, pour l'anneau du cercle de cap (p : avancement 0 → 1). */
+export type RingSailChange = { from: SailId; to: SailId; p: number; back: boolean };
+
+/** Étiquette du joueur : la voile à poste, ou le changement en cours (l'anneau du cercle de cap montre l'avancement). */
+const sailLabel = (b: Boat) => {
+  if (b.sailTo === null) return SAIL_LABEL[b.sail] ?? '';
+  return b.sailBack ? `RETOUR ${SAIL_LABEL[b.sail]}` : `${SAIL_LABEL[b.sail]} → ${SAIL_LABEL[b.sailTo]}`;
+};
 
 function graticule(): FeatureCollection {
   const f: Feature[] = [];
@@ -308,7 +316,7 @@ export class ChartView {
     const withTracks = now - this.tracksAt > 5000;
     if (withTracks) this.tracksAt = now;
     for (const b of this.boats) {
-      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, label: b.isPlayer ? `TOI · ${SAIL_LABEL[b.sail] ?? ''}${b.sailChange > 0 ? '…' : ''}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
+      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, label: b.isPlayer ? `TOI · ${sailLabel(b)}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
       const tr = !withTracks ? [] : b.isPlayer ? b.trail : b.trail.slice(-120);
       if (tr.length) tracks.push({ type: 'Feature', properties: { color: b.isPlayer ? '#ffffff' : b.color, me: b.isPlayer }, geometry: { type: 'LineString', coordinates: [...tr.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]] } });
     }
@@ -586,7 +594,7 @@ export class ChartView {
 
   /* ---------- cercle de cap autour du bateau ---------- */
   private ring: HTMLDivElement | null = null;
-  private ringState = { pos: null as LonLat | null, hdg: 0, twd: 0, tws: 0, pending: null as number | null, sail: 'foc' as SailId, show: false };
+  private ringState = { pos: null as LonLat | null, hdg: 0, twd: 0, tws: 0, pending: null as number | null, sail: 'foc' as SailId, change: null as RingSailChange | null, show: false };
   private ringKey = '';
   /** appelé quand on tire la poignée (cap vrai), et au relâché */
   onRingDrag: ((hdg: number, done: boolean) => void) | null = null;
@@ -594,7 +602,7 @@ export class ChartView {
   onRingCancel: (() => void) | null = null;
 
   /** Données du cercle de cap : position et cap du bateau, vent, consigne en cours. */
-  setRing(d: { pos: LonLat; hdg: number; twd: number; tws: number; pending: number | null; sail: SailId } | null) {
+  setRing(d: { pos: LonLat; hdg: number; twd: number; tws: number; pending: number | null; sail: SailId; change: RingSailChange | null } | null) {
     if (!d) {
       this.ringState.show = false;
       if (this.ring) this.ring.hidden = true;
@@ -610,6 +618,7 @@ export class ChartView {
     el.className = 'hring';
     el.innerHTML = `<svg viewBox="-130 -130 260 260" aria-label="Cap : tire la poignée pour choisir la direction">
       <g data-sect></g>
+      <g data-sxr class="sxr" style="display: none"><circle r="54" class="sxr-t"/><circle r="54" class="sxr-a" data-sxr-arc pathLength="100" transform="rotate(-90)"/></g>
       <circle r="92" class="band"/>
       <g data-ticks></g>
       <line data-cur x1="0" y1="0" x2="0" y2="-92" class="cur"/>
@@ -687,6 +696,15 @@ export class ChartView {
     knob.setAttribute('transform', `translate(${(Math.sin(kr) * 92).toFixed(1)} ${(-Math.cos(kr) * 92).toFixed(1)})`);
     knob.classList.toggle('on', st.pending !== null);
     el.querySelector('[data-ktxt]')!.textContent = String(Math.round(ka)).padStart(3, '0');
+    // changement de voile : un anneau intérieur se remplit (ou se vide pendant une annulation)
+    const sx = el.querySelector<SVGGElement>('[data-sxr]')!;
+    const ch = st.change;
+    sx.style.display = ch ? '' : 'none';
+    if (ch) {
+      const arc = el.querySelector<SVGCircleElement>('[data-sxr-arc]')!;
+      arc.setAttribute('stroke', SAIL_COLOR[ch.back ? ch.from : ch.to]);
+      arc.setAttribute('stroke-dasharray', `${(ch.p * 100).toFixed(1)} 100`);
+    }
     const okBox = el.querySelector<HTMLElement>('[data-hrok]')!;
     okBox.hidden = st.pending === null;
     if (st.pending !== null) el.querySelector('[data-ok]')!.textContent = `OK ${String(Math.round(st.pending)).padStart(3, '0')}°`;

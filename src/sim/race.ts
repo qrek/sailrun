@@ -1,7 +1,7 @@
 import { RaceDef, raceById } from '../data/races';
 import { Setup, botSetup, calibrated, isLightColor, lookOf, perfOf, styleOf } from '../data/garage';
 import { genPerf, shortName } from '../data/fleet';
-import { Boat, BoatEvent, CP_RADIUS, bestSail, checkpointHeading, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
+import { Boat, BoatEvent, CP_RADIUS, SAIL_CHANGE_HOURS, bestSail, checkpointHeading, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
 import { LonLat, Rng, dist } from './geo';
 import { bestHeading, decideEvery, nextTarget } from './router';
 import { routeTimes } from './solo';
@@ -84,7 +84,10 @@ export function makeBoat(o: Partial<Boat> & Pick<Boat, 'id' | 'name' | 'color' |
     finished: null,
     talk: 8,
     sail: 'foc',
-    sailChange: 0,
+    sailTo: null,
+    sailT: 0,
+    sailDur: SAIL_CHANGE_HOURS,
+    sailBack: false,
     autoSail: true,
     sailLag: 0,
     sailLagMax: 0.5,
@@ -432,9 +435,11 @@ export function clearRace() {
 /** Vitesses du temps : heures de course par seconde réelle. */
 export const TIME_SCALES = [
   { id: 'live', label: 'Temps réel', hoursPerSecond: 1 / 3600 },
+  // un changement de voile (15 min) dure 15 s : de quoi regarder chaque étape
+  { id: '1m', label: '1 s = 1 min', hoursPerSecond: 1 / 60 },
   { id: '10m', label: '1 s = 10 min', hoursPerSecond: 1 / 6 },
   { id: '30m', label: '1 s = 30 min', hoursPerSecond: 0.5 },
   { id: '2h', label: '1 s = 2 h', hoursPerSecond: 2 },
 ];
 
-export const timeScaleOf = (id: string) => TIME_SCALES.find((t) => t.id === id) ?? TIME_SCALES[2];
+export const timeScaleOf = (id: string) => TIME_SCALES.find((t) => t.id === id) ?? TIME_SCALES.find((t) => t.id === '30m')!;

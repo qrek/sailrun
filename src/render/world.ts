@@ -3,7 +3,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { Boat } from '../sim/boat';
 import { D2R, LAND, LATMAX, LATMIN, LONMAX, LONMIN, LonLat, Rng, clamp, smooth, fromX, fromZ, isLand, toX, toZ } from '../sim/geo';
 import { WindSource } from '../sim/wind';
-import { BoatRig, buildBoat, disposeBoat, trimBoat } from './boatModel';
+import { BoatRig, buildBoat, disposeBoat, showSails, trimBoat } from './boatModel';
 import { Clouds } from './clouds';
 import { Engine, InputHandler } from './engine';
 import HEXGRID from '../data/hexgrid.json';
@@ -919,6 +919,7 @@ export class WorldView {
       v.rig.root.rotation.y = -b.hdg * D2R;
       v.rig.root.scale.setScalar(scale);
       trimBoat(v.rig, b.twa, b.tws);
+      showSails(v.rig, b, time);
       // tangage léger
       v.rig.heel.rotation.x = 0.02 * Math.sin(time * 1.3 + z * 2);
       const sp = Math.min(1, b.spd / 18);

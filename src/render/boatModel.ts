@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import type { SailId } from '../sim/boat';
+import { SailChangeState, sailShow } from './sailAnim';
 
 /**
  * IMOCA 60 stylisé mais fidèle : coque lissée par sections (bouchains, étrave droite ou ronde),
@@ -34,6 +36,26 @@ export interface BoatRig {
   foilParts: THREE.Object3D[];
   /** géométries partagées avec un modèle importé : ne pas les libérer */
   shared?: boolean;
+  /** voiles d'avant du modèle codé (foc, code 0, spi) ; un modèle importé n'a que son `jib` */
+  headsails?: Record<SailId, Headsail>;
+}
+
+/** Une voile d'avant : la voile elle-même, son boudin roulé le long du câble, et le boudin couché sur le pont. */
+export interface Headsail {
+  /** pivot au point d'amure ; le bordé tourne autour du guindant */
+  pivot: THREE.Group;
+  /** direction du guindant (amure → têtière) dans le repère du pivot */
+  axis: THREE.Vector3;
+  /** longueur du guindant */
+  len: number;
+  cloth: THREE.Mesh;
+  furled: THREE.Mesh;
+  deck: THREE.Mesh;
+  tackZ: number;
+  /** angle de bordé (radians) selon l'angle au vent et l'ouverture de la bôme */
+  trim: (a: number, boom: number) => number;
+  /** déroule la voile (0 → 1) ; `flap` > 0 : elle fasseye */
+  setOpen: (open: number, flap: number, time: number) => void;
 }
 
 /** Constructeur alternatif (modèle GLB importé) ; renvoie null pour garder le modèle codé. */
@@ -263,6 +285,86 @@ export function jibTexture(color: string, cloth = 'carbone'): THREE.CanvasTextur
   g.moveTo(0, 428);
   g.quadraticCurveTo(140, 388, 256, 368);
   g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  texCache.set(key, t);
+  return t;
+}
+
+/** Code 0 : membrane plus claire que le foc, guindant aux couleurs du bateau, grand « 0 » près de l'écoute. */
+export function code0Texture(color: string, cloth = 'carbone'): THREE.CanvasTexture {
+  const key = `code0:${color}:${cloth}`;
+  const hit = texCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 512;
+  const g = c.getContext('2d')!;
+  clothNow = SAIL_CLOTH[cloth] ?? SAIL_CLOTH.carbone;
+  carbonBase(g, 256, 512);
+  // voile légère : la membrane est plus fine, donc plus claire
+  g.fillStyle = cloth === 'blanc' ? 'rgba(200,214,226,0.25)' : 'rgba(255,255,255,0.13)';
+  g.fillRect(0, 0, 256, 512);
+  // u = 0 au guindant (à gauche), v = 0 à la bordure (en bas)
+  g.fillStyle = isLight(color) ? '#DCE3E8' : color;
+  g.fillRect(0, 0, 30, 512);
+  g.strokeStyle = 'rgba(255,255,255,0.85)';
+  g.lineWidth = 4;
+  g.beginPath();
+  g.moveTo(36, 0);
+  g.lineTo(36, 512);
+  g.stroke();
+  g.fillStyle = cloth === 'blanc' ? 'rgba(30,40,50,0.22)' : 'rgba(255,255,255,0.22)';
+  g.font = '800 150px "Barlow Condensed", "Arial Narrow", sans-serif';
+  g.textAlign = 'center';
+  g.fillText('0', 150, 470);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  texCache.set(key, t);
+  return t;
+}
+
+/** Spi : grande voile légère aux couleurs du bateau, panneaux en éventail depuis le point d'amure, têtière claire. */
+export function spiTexture(color: string, accent = '#FFFFFF'): THREE.CanvasTexture {
+  const base = isLight(color) ? (accent && !isLight(accent) ? accent : '#2563c9') : color;
+  const key = `spi:${base}`;
+  const hit = texCache.get(key);
+  if (hit) return hit;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 512;
+  const g = c.getContext('2d')!;
+  const grd = g.createLinearGradient(0, 512, 256, 0);
+  grd.addColorStop(0, base);
+  grd.addColorStop(1, `#${new THREE.Color(base).lerp(new THREE.Color('#ffffff'), 0.22).getHexString()}`);
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 512);
+  // panneaux en éventail, un sur deux un peu plus sombre
+  for (let k = 0; k < 10; k++) {
+    if (k % 2) continue;
+    const a0 = (k / 10) * (Math.PI / 2);
+    const a1 = ((k + 1) / 10) * (Math.PI / 2);
+    g.fillStyle = 'rgba(0,0,0,0.09)';
+    g.beginPath();
+    g.moveTo(0, 512);
+    g.lineTo(Math.cos(a0) * 900, 512 - Math.sin(a0) * 900);
+    g.lineTo(Math.cos(a1) * 900, 512 - Math.sin(a1) * 900);
+    g.closePath();
+    g.fill();
+  }
+  // têtière claire et bande de bordure
+  g.fillStyle = '#F4F6F8';
+  g.beginPath();
+  g.moveTo(0, 0);
+  g.lineTo(256, 0);
+  g.lineTo(256, 40);
+  g.quadraticCurveTo(120, 110, 0, 96);
+  g.closePath();
+  g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.85)';
+  g.fillRect(0, 488, 256, 10);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
@@ -631,29 +733,59 @@ function addDeckGear(parent: THREE.Object3D, kind: string, steel: THREE.Material
 }
 
 /* ---------- voiles creusées ---------- */
-function sailMesh(luff: (v: number) => THREE.Vector3, chord: (v: number) => number, draft: number, mat: THREE.Material, roach = 0, back?: THREE.Material, proportional = false, hero = false, twist = 0): THREE.Object3D {
-  const NU = hero ? 22 : 10;
-  const NV = hero ? 40 : 16;
-  const pos: number[] = [];
-  const uv: number[] = [];
-  const idx: number[] = [];
-  let chMax = 0;
-  for (let j = 0; j <= NV; j++) chMax = Math.max(chMax, chord(j / NV) * (1 + roach * Math.sin((j / NV) * Math.PI)));
+interface SailSpec {
+  luff: (v: number) => THREE.Vector3;
+  chord: (v: number) => number;
+  draft: number;
+  roach: number;
+  twist: number;
+  NU: number;
+  NV: number;
+  proportional: boolean;
+  /** forme du guindant une fois la voile déroulée (voiles volantes : il se creuse) */
+  bow?: (v: number) => THREE.Vector3;
+}
+
+/**
+ * Sommets d'une voile creusée. `open` < 1 : la voile est en partie roulée sur son guindant
+ * (la corde raccourcit, le point d'écoute revient vers le câble) ; `flap` : elle fasseye.
+ */
+function sailVerts(sp: SailSpec, pos: Float32Array, open = 1, flap = 0, phase = 0) {
+  const { NU, NV } = sp;
+  const p0 = new THREE.Vector3();
+  let n = 0;
   for (let j = 0; j <= NV; j++) {
     const v = j / NV;
-    const p0 = luff(v);
-    const ch = chord(v) * (1 + roach * Math.sin(v * Math.PI));
+    p0.copy(sp.luff(v));
+    if (sp.bow) p0.addScaledVector(sp.bow(v), open);
+    const full = sp.chord(v) * (1 + sp.roach * Math.sin(v * Math.PI));
+    const ch = full * open;
+    // vrillage : le haut de la voile s'ouvre (la corde tourne autour du guindant)
+    const tw = sp.twist * v;
+    const cx = Math.sin(tw);
+    const cz = Math.cos(tw);
     for (let i = 0; i <= NU; i++) {
       const u = i / NU;
       // creux maximal vers 40 % de la corde, côté +x (trimBoat le passe sous le vent)
-      const camber = draft * ch * 4 * u * (1 - u) * (1 - 0.35 * u);
-      // vrillage : le haut de la voile s'ouvre (la corde tourne autour du guindant)
-      const tw = twist * v;
-      const cx = Math.sin(tw);
-      const cz = Math.cos(tw);
-      pos.push(p0.x + camber * cz + u * ch * cx, p0.y, p0.z + u * ch * cz - camber * cx);
-      uv.push(proportional ? (u * ch) / chMax : u, v);
+      let camber = sp.draft * ch * 4 * u * (1 - u) * (1 - 0.35 * u);
+      if (flap) camber += flap * full * 0.045 * Math.sin(u * Math.PI) * Math.sin(u * 11 + v * 7 - phase * 9);
+      pos[n++] = p0.x + camber * cz + u * ch * cx;
+      pos[n++] = p0.y;
+      pos[n++] = p0.z + u * ch * cz - camber * cx;
     }
+  }
+}
+
+function sailGeometry(sp: SailSpec): THREE.BufferGeometry {
+  const { NU, NV } = sp;
+  let chMax = 0;
+  for (let j = 0; j <= NV; j++) chMax = Math.max(chMax, sp.chord(j / NV) * (1 + sp.roach * Math.sin((j / NV) * Math.PI)));
+  const uv: number[] = [];
+  const idx: number[] = [];
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;
+    const ch = sp.chord(v) * (1 + sp.roach * Math.sin(v * Math.PI));
+    for (let i = 0; i <= NU; i++) uv.push(sp.proportional ? ((i / NU) * ch) / chMax : i / NU, v);
   }
   for (let j = 0; j < NV; j++) {
     for (let i = 0; i < NU; i++) {
@@ -662,15 +794,79 @@ function sailMesh(luff: (v: number) => THREE.Vector3, chord: (v: number) => numb
       idx.push(a, b, a + 1, b, b + 1, a + 1);
     }
   }
+  const pos = new Float32Array((NU + 1) * (NV + 1) * 3);
+  sailVerts(sp, pos);
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
+  return g;
+}
+
+function sailMesh(luff: (v: number) => THREE.Vector3, chord: (v: number) => number, draft: number, mat: THREE.Material, roach = 0, back?: THREE.Material, proportional = false, hero = false, twist = 0): THREE.Object3D {
+  const g = sailGeometry({ luff, chord, draft, roach, twist, NU: hero ? 22 : 10, NV: hero ? 40 : 16, proportional });
   if (!back) return new THREE.Mesh(g, mat);
   const grp = new THREE.Group();
   grp.add(new THREE.Mesh(g, mat), new THREE.Mesh(g, back));
   return grp;
+}
+
+/** Le boudin couché sur le pont sort de l'écoutille avant, ici. */
+const DECK_FROM = -0.34;
+const DECK_LEN = 0.24;
+const DECK_Y = 0.124; // le pont avant est à ~0,112 sur l'axe, plus le rayon du boudin
+
+/** Voile d'avant volante : guindant de l'amure à la têtière, boudins pour les manœuvres. */
+function headsail(o: {
+  tack: THREE.Vector3;
+  head: THREE.Vector3;
+  chord: (v: number) => number;
+  draft: number;
+  roach?: number;
+  twist: number;
+  bow?: (v: number) => THREE.Vector3;
+  mat: THREE.Material;
+  roll: THREE.Material;
+  trim: Headsail['trim'];
+  hero: boolean;
+}): Headsail {
+  const pivot = new THREE.Group();
+  pivot.position.copy(o.tack);
+  const d = o.head.clone().sub(o.tack);
+  const len = d.length();
+  const axis = d.clone().normalize();
+  const sp: SailSpec = { luff: (v) => d.clone().multiplyScalar(v), chord: o.chord, draft: o.draft, roach: o.roach ?? 0, twist: o.hero ? o.twist : 0, NU: o.hero ? 22 : 10, NV: o.hero ? 40 : 16, proportional: false, bow: o.bow };
+  const geo = sailGeometry(sp);
+  const cloth = new THREE.Mesh(geo, o.mat);
+  pivot.add(cloth);
+  // boudin roulé autour du câble : un cylindre de hauteur 1 posé sur l'amure, étiré le long du guindant
+  const k = o.hero ? 1 : 1.4;
+  const fg = new THREE.CylinderGeometry(0.0035 * k, 0.0075 * k, 1, o.hero ? 10 : 6);
+  fg.translate(0, 0.5, 0);
+  const furled = new THREE.Mesh(fg, o.roll);
+  furled.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+  furled.visible = false;
+  pivot.add(furled);
+  // boudin couché sur le pont : son avant au point d'amure, il s'étire vers l'arrière
+  const dg = new THREE.CylinderGeometry(0.011 * k, 0.011 * k, 1, o.hero ? 10 : 6);
+  dg.rotateX(Math.PI / 2);
+  dg.translate(0, 0, 0.5);
+  const deck = new THREE.Mesh(dg, o.roll);
+  deck.position.set(0, DECK_Y, o.tack.z);
+  deck.visible = false;
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  let open = 1;
+  let flapping = false;
+  const setOpen = (k: number, flap: number, time: number) => {
+    if (k === open && !flap && !flapping) return;
+    open = k;
+    flapping = flap > 0;
+    sailVerts(sp, pos.array as Float32Array, Math.max(0.002, k), flap, time);
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  };
+  return { pivot, axis, len, cloth, furled, deck, tackZ: o.tack.z, trim: o.trim, setOpen };
 }
 
 function foilMesh(points: [number, number, number][], thick: number, chordLen: number, mat: THREE.Material): THREE.Mesh {
@@ -880,7 +1076,7 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
   }
   // étai et étai de trinquette
   rig.push(0, mastTop - 0.02, mastZ - 0.01, 0, 0.09, -0.62);
-  rig.push(0, 0.07 + mh * 0.78, mastZ - 0.01, 0, 0.09, -0.44);
+  rig.push(0, 0.07 + mh * 0.8, mastZ - 0.01, 0, 0.116, -0.49);
   if (hero) {
     for (let k = 0; k < rig.length; k += 6) {
       heel.add(rod(new THREE.Vector3(rig[k], rig[k + 1], rig[k + 2]), new THREE.Vector3(rig[k + 3], rig[k + 4], rig[k + 5]), 0.0016, cable));
@@ -926,14 +1122,59 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
     main.add(boom);
   }
 
-  // foc (J2) : du nez au mât
-  const jib = new THREE.Group();
-  jib.position.set(0, 0, -0.6);
-  heel.add(jib);
-  const jibHead = 0.07 + mh * 0.8;
-  const tackY = 0.1;
-  const headZ = (mastZ - 0.01 + 0.6) * 0.92; // la têtière arrive presque au mât
-  jib.add(sailMesh((v) => new THREE.Vector3(0, tackY + (jibHead - tackY) * v, headZ * v), (v) => 0.5 * (1 - v) + 0.02 * v, 0.13, jibMat, 0, undefined, false, hero, hero ? 0.26 : 0));
+  // voiles d'avant : le foc à l'étrave, plat ; le code 0 et le spi au bout du bout-dehors, en tête de mât
+  const cloth = SAIL_CLOTH[look.sail ?? 'carbone'] ?? SAIL_CLOTH.carbone;
+  const code0Mat = new THREE.MeshStandardMaterial({ map: code0Texture(look.color, look.sail), roughness: 0.55, side: THREE.DoubleSide });
+  const spiMat = new THREE.MeshStandardMaterial({ map: spiTexture(look.color, look.accent), roughness: 0.7, side: THREE.DoubleSide });
+  const rollMat = new THREE.MeshStandardMaterial({ color: cloth[0], roughness: 0.7 });
+  const rollSpi = new THREE.MeshStandardMaterial({ color: new THREE.Color(isLight(look.color) ? '#2563c9' : look.color).multiplyScalar(0.8), roughness: 0.75 });
+  materials.push(code0Mat, spiMat, rollMat, rollSpi);
+  const spritTip = new THREE.Vector3(0, 0.106, -0.635);
+  const top = new THREE.Vector3(0, mastTop - 0.025, mastZ - 0.012);
+  const headsails: Record<SailId, Headsail> = {
+    foc: headsail({
+      tack: new THREE.Vector3(0, 0.116, -0.49),
+      head: new THREE.Vector3(0, 0.07 + mh * 0.8, mastZ - 0.012),
+      chord: (v) => 0.38 * (1 - v) + 0.02 * v,
+      draft: 0.08,
+      twist: 0.2,
+      mat: jibMat,
+      roll: rollMat,
+      trim: (_a, boom) => boom * 0.45,
+      hero,
+    }),
+    code0: headsail({
+      tack: spritTip,
+      head: top,
+      chord: (v) => 0.5 * (1 - v) + 0.03 * v,
+      draft: 0.12,
+      roach: 0.24,
+      twist: 0.28,
+      // le guindant d'une voile sur câble creuse un peu sous le vent
+      bow: (v) => new THREE.Vector3(0.018, 0, 0.03).multiplyScalar(Math.sin(Math.PI * v)),
+      mat: code0Mat,
+      roll: rollMat,
+      trim: (_a, boom) => boom * 0.52,
+      hero,
+    }),
+    spi: headsail({
+      tack: spritTip.clone().setY(0.116),
+      head: top.clone().setY(mastTop - 0.015),
+      chord: (v) => 0.03 + 0.56 * Math.pow(1 - Math.pow(v, 2.3), 0.55),
+      draft: 0.3,
+      twist: 0.35,
+      // asymétrique : le guindant part loin devant et au vent du bout-dehors
+      bow: (v) => new THREE.Vector3(-0.03, 0, -0.15).multiplyScalar(Math.sin(Math.PI * Math.pow(v, 0.85))),
+      mat: spiMat,
+      roll: rollSpi,
+      trim: (a) => (Math.min(46, Math.max(14, a * 0.3)) * Math.PI) / 180,
+      hero,
+    }),
+  };
+  for (const h of Object.values(headsails)) heel.add(h.pivot);
+  const jib = headsails.foc.pivot;
+  headsails.code0.pivot.visible = false;
+  headsails.spi.pivot.visible = false;
 
   // mât, gréement et voiles : regroupés et articulés au pied de mât, pour la quête
   const spar = new THREE.Group();
@@ -943,11 +1184,12 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
     spar.add(o);
   }
   heel.add(spar);
+  for (const h of Object.values(headsails)) heel.add(h.deck);
 
   root.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) o.castShadow = true;
   });
-  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] }, spar, foilParts };
+  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] }, spar, foilParts, headsails };
 }
 
 /** Oriente voiles et gîte selon l'angle au vent (twa > 0 : vent de tribord). */
@@ -957,9 +1199,42 @@ export function trimBoat(rig: BoatRig, twa: number, tws: number) {
   const boom = (Math.min(78, Math.max(6, a * 0.5)) * Math.PI) / 180;
   rig.main.rotation.y = -side * boom;
   rig.main.scale.x = -side; // le creux de la voile passe sous le vent
-  rig.jib.rotation.y = -side * boom * 0.45;
-  rig.jib.scale.x = -side;
+  if (rig.headsails) {
+    // voiles d'avant bordées autour de leur guindant : l'amure et la têtière restent en place
+    for (const h of Object.values(rig.headsails)) {
+      h.pivot.quaternion.setFromAxisAngle(h.axis, -side * h.trim(a, boom));
+      h.pivot.scale.x = -side;
+    }
+  } else {
+    rig.jib.rotation.y = -side * boom * 0.45;
+    rig.jib.scale.x = -side;
+  }
   rig.heel.rotation.z = (side * Math.min(1, tws / 25) * (a < 120 ? 15 : 6) * Math.PI) / 180;
+}
+
+/**
+ * Voiles d'avant selon la voile à poste et le changement en cours : boudin sur le pont, hissage,
+ * déroulé, enroulement de l'ancienne. Sans effet sur un modèle importé (il n'a que son foc).
+ */
+export function showSails(rig: BoatRig, b: SailChangeState, time: number) {
+  const hs = rig.headsails;
+  if (!hs) return;
+  const show = sailShow(b);
+  for (const id of Object.keys(hs) as SailId[]) {
+    const h = hs[id];
+    const s = show[id];
+    h.pivot.visible = !!s;
+    h.deck.visible = !!s && s.deck > 0.01;
+    if (!s) continue;
+    h.setOpen(s.open, s.flap, time);
+    h.cloth.visible = s.open > 0.01;
+    h.furled.visible = s.hoist > 0.005 && s.roll > 0.02;
+    h.furled.scale.set(s.roll, Math.max(0.001, s.hoist * h.len), s.roll);
+    if (h.deck.visible) {
+      h.deck.position.z = DECK_FROM + (h.tackZ - DECK_FROM) * s.slide;
+      h.deck.scale.z = s.deck * DECK_LEN;
+    }
+  }
 }
 
 export function disposeBoat(rig: BoatRig) {

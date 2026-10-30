@@ -65,6 +65,18 @@ export const SAILS: { id: SailId; name: string; hint: string; a: number[]; f: nu
 ];
 export const SAIL_CHANGE_HOURS = 0.25;
 
+/**
+ * Un changement de voile se fait « en double », comme en vrai : la nouvelle voile est montée roulée
+ * pendant que l'ancienne travaille encore, puis on déroule l'une et on enroule l'autre.
+ * `end` : fin de l'étape en fraction de la durée totale ; `works` : la voile qui fait avancer le bateau.
+ */
+export const SAIL_STEPS: { id: 'prep' | 'hoist' | 'unfurl' | 'furl'; name: string; what: string; undo: string; end: number; works: 'from' | 'to'; f: number }[] = [
+  { id: 'prep', name: 'Préparation', what: 'la voile roulée est traînée jusqu’à l’avant', undo: 'la voile roulée repart au rangement', end: 5 / 15, works: 'from', f: 0.9 },
+  { id: 'hoist', name: 'Hissage', what: 'le boudin monte le long de l’étai', undo: 'le boudin redescend sur le pont', end: 11 / 15, works: 'from', f: 0.85 },
+  { id: 'unfurl', name: 'Déroulé', what: 'la nouvelle voile se déroule : deux voiles en l’air', undo: 'la nouvelle voile se réenroule', end: 13 / 15, works: 'to', f: 0.75 },
+  { id: 'furl', name: 'Enroulement', what: 'l’ancienne voile s’enroule puis descend', undo: 'l’ancienne voile remonte et se redéroule', end: 1, works: 'to', f: 0.9 },
+];
+
 export function sailFactor(sail: SailId, twa: number, tws: number): number {
   const s = SAILS.find((x) => x.id === sail) ?? SAILS[0];
   const a = Math.abs(twa);
@@ -124,10 +136,16 @@ export interface Boat {
   trailT: number;
   finished: number | null;
   talk: number;
-  /** voile d'avant envoyée */
+  /** voile d'avant à poste (pendant un changement : celle qu'on quitte) */
   sail: SailId;
-  /** heures restantes de changement de voile */
-  sailChange: number;
+  /** changement de voile en cours : la voile qu'on envoie (null = aucun) */
+  sailTo: SailId | null;
+  /** avancement du changement, en heures depuis son début */
+  sailT: number;
+  /** durée totale du changement (plus longue quand le skipper est épuisé) */
+  sailDur: number;
+  /** le changement est annulé : on refait les étapes à l'envers */
+  sailBack: boolean;
   /** la voile change toute seule (avec un temps de réaction) */
   autoSail: boolean;
   sailLag: number;
@@ -164,11 +182,12 @@ export function checkpointHeading(pos: LonLat, cp: LonLat, twd: number): number 
 
 /** Complète un bateau venu d'une ancienne sauvegarde. */
 export function migrateBoat(b: Partial<Boat>): Boat {
-  const defaults = { sail: 'foc' as SailId, sailChange: 0, autoSail: true, sailLag: 0, sailLagMax: 0.5, lock: 'hdg' as const, lockTwa: b.twa || 90, mark: 0 };
+  const defaults = { sail: 'foc' as SailId, sailTo: null, sailT: 0, sailDur: SAIL_CHANGE_HOURS, sailBack: false, autoSail: true, sailLag: 0, sailLagMax: 0.5, lock: 'hdg' as const, lockTwa: b.twa || 90, mark: 0 };
   return Object.assign(defaults, b) as Boat;
 }
 
-export type BoatEvent = 'tack' | 'gybe' | 'land' | 'finish' | 'avarie' | 'repaired' | 'woke' | 'sail' | 'mark' | 'checkpoint';
+/** `sail` : la voile auto lance un changement ; `sailset` : nouvelle voile à poste ; `sailkept` : annulation terminée. */
+export type BoatEvent = 'tack' | 'gybe' | 'land' | 'finish' | 'avarie' | 'repaired' | 'woke' | 'sail' | 'sailset' | 'sailkept' | 'mark' | 'checkpoint';
 
 /* Polaire de base d'un 60 pieds, en fraction de la force du vent */
 const PA = [0, 30, 38, 45, 52, 60, 75, 90, 110, 130, 150, 165, 180];
@@ -206,20 +225,65 @@ export function boatSpeed(twa: number, tws: number, p: Perf, sail?: SailId): num
   return Math.min(p.imoca ? 36 : 34, s * m * p.speed * sf);
 }
 
-/** Change de voile : quelques minutes au ralenti et un peu d'énergie. */
-export function changeSail(b: Boat, sail: SailId): boolean {
-  if (b.sail === sail || b.finished !== null) return false;
-  b.sail = sail;
-  b.sailChange = SAIL_CHANGE_HOURS * (b.energy < 25 ? 1.5 : 1);
+/** Étape du changement de voile en cours (index dans SAIL_STEPS), -1 s'il n'y en a pas. */
+export function sailStep(b: Boat): number {
+  if (b.sailTo === null) return -1;
+  const p = b.sailT / b.sailDur;
+  const i = SAIL_STEPS.findIndex((s) => p < s.end - 1e-9);
+  return i < 0 ? SAIL_STEPS.length - 1 : i;
+}
+
+/** Voile qui fait avancer le bateau : l'ancienne jusqu'au déroulé, puis la nouvelle. */
+export function workingSail(b: Boat): SailId {
+  return b.sailTo !== null && SAIL_STEPS[sailStep(b)].works === 'to' ? b.sailTo : b.sail;
+}
+
+/** Voile choisie : celle qu'on envoie, ou celle qu'on garde quand on annule. */
+export function targetSail(b: Boat): SailId {
+  return b.sailTo !== null && !b.sailBack ? b.sailTo : b.sail;
+}
+
+/** Heures avant la fin du changement (ou de son annulation). */
+export function sailRemaining(b: Boat): number {
+  if (b.sailTo === null) return 0;
+  return Math.max(0, b.sailBack ? b.sailT : b.sailDur - b.sailT);
+}
+
+/**
+ * Clic sur une voile. Hors changement : lance l'envoi (15 min, un peu d'énergie).
+ * Pendant un changement : l'ancienne voile annule (les étapes se défont à l'envers),
+ * la nouvelle reprend l'envoi après une annulation, la troisième est refusée.
+ */
+export function changeSail(b: Boat, sail: SailId): 'start' | 'cancel' | 'resume' | null {
+  if (b.finished !== null) return null;
+  if (b.sailTo !== null) {
+    if (sail === b.sail && !b.sailBack) {
+      b.sailBack = true;
+      return 'cancel';
+    }
+    if (sail === b.sailTo && b.sailBack) {
+      b.sailBack = false;
+      return 'resume';
+    }
+    return null;
+  }
+  if (b.sail === sail) return null;
+  b.sailTo = sail;
+  b.sailT = 0;
+  b.sailBack = false;
+  b.sailDur = SAIL_CHANGE_HOURS * (b.energy < 25 ? 1.5 : 1);
   b.energy = Math.max(0, b.energy - 3);
   b.sailLag = 0;
-  return true;
+  return 'start';
 }
 
 /** Ce qui ralentit le bateau en ce moment, dans l'ordre d'affichage. */
 export function speedFactors(b: Boat): { label: string; f: number }[] {
   const out: { label: string; f: number }[] = [];
-  if (b.sailChange > 0) out.push({ label: 'Changement de voile', f: 0.8 });
+  if (b.sailTo !== null) {
+    const st = SAIL_STEPS[sailStep(b)];
+    out.push({ label: `Changement de voile (${st.name.toLowerCase()})`, f: st.f });
+  }
   if (b.penalty > 0) out.push({ label: 'Manœuvre', f: 0.6 });
   if (b.sleep > 0) out.push({ label: 'Skipper qui dort', f: 0.93 });
   if (b.energy < 25) out.push({ label: 'Skipper épuisé', f: 0.88 });
@@ -261,7 +325,7 @@ export function stepBoat(b: Boat, c: StepCtx): BoatEvent[] {
   if (b.lock !== 'twa' || b.auto) b.lockTwa = twa;
 
   // voile automatique : elle réagit avec un temps de retard, et jamais pendant que le skipper dort
-  if (b.autoSail && b.sailChange <= 0 && b.sleep <= 0) {
+  if (b.autoSail && b.sailTo === null && b.sleep <= 0) {
     const best = bestSail(twa, b.tws);
     if (best !== b.sail && sailFactor(best, twa, b.tws) > sailFactor(b.sail, twa, b.tws) + 0.015) {
       b.sailLag += dt;
@@ -275,9 +339,22 @@ export function stepBoat(b: Boat, c: StepCtx): BoatEvent[] {
   }
 
   let f = 1;
-  if (b.sailChange > 0) {
-    f *= 0.8;
-    b.sailChange -= dt;
+  const sail = workingSail(b);
+  if (b.sailTo !== null) {
+    f *= SAIL_STEPS[sailStep(b)].f;
+    b.sailT += b.sailBack ? -dt : dt;
+    if (!b.sailBack && b.sailT >= b.sailDur - 1e-9) {
+      b.sail = b.sailTo;
+      b.sailTo = null;
+      ev.push('sailset');
+    } else if (b.sailBack && b.sailT <= 1e-9) {
+      b.sailTo = null;
+      ev.push('sailkept');
+    }
+    if (b.sailTo === null) {
+      b.sailT = 0;
+      b.sailBack = false;
+    }
   }
   if (b.penalty > 0) {
     f *= 0.6;
@@ -305,7 +382,7 @@ export function stepBoat(b: Boat, c: StepCtx): BoatEvent[] {
       ev.push('repaired');
     }
   }
-  b.spd = boatSpeed(twa, b.tws, b.perf, b.sail) * f;
+  b.spd = boatSpeed(twa, b.tws, b.perf, sail) * f;
 
   if (c.rng && !b.avarie) {
     const risk = 0.012 * b.perf.fragility * (Math.max(0, b.tws - 17) / 8) * (b.energy < 25 ? 1.6 : 1) * dt;
@@ -357,8 +434,9 @@ export function wakeUp(b: Boat): boolean {
   return true;
 }
 
+/** Pas de sieste pendant une réparation ni pendant un changement de voile. */
 export function startSleep(b: Boat): boolean {
-  if (b.sleep > 0 || b.repair > 0 || b.finished !== null) return false;
+  if (b.sleep > 0 || b.repair > 0 || b.sailTo !== null || b.finished !== null) return false;
   b.sleep = SLEEP_HOURS;
   return true;
 }

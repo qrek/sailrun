@@ -1,4 +1,4 @@
-import { AVARIES, Boat, REPAIR_HOURS, SAILS, SailId, bestSail, boatSpeed, sailFactor, speedFactors } from '../sim/boat';
+import { AVARIES, Boat, REPAIR_HOURS, SAILS, SAIL_STEPS, SailId, bestSail, boatSpeed, sailFactor, sailRemaining, sailStep, speedFactors, targetSail, workingSail } from '../sim/boat';
 import { bearing, dist, fmtInt, move, norm180 } from '../sim/geo';
 import { Race, TIME_SCALES } from '../sim/race';
 import { GridWind } from '../sim/gfsWind';
@@ -278,6 +278,17 @@ export class Hud {
         </div>
         <div class="card sailc">
           <div class="sx-now" data-sx-now></div>
+          <div class="sx-chg" data-sx-chg hidden aria-live="polite">
+            <div class="sx-chg-h">
+              <span class="sx-pair" aria-hidden="true"><span class="sx-mini" data-sx-from></span><i>→</i><span class="sx-mini" data-sx-to></span></span>
+              <span class="sx-t"><small data-sx-kind>Changement de voile</small><b data-sx-title></b></span>
+            </div>
+            <ol class="sx-steps">
+              ${SAIL_STEPS.map((s, i) => `<li data-sx-step="${i}"><span class="sx-n">${esc(s.name)}</span><span class="sx-w" data-sx-w></span><span class="sx-f">−${Math.round((1 - s.f) * 100)} %</span><span class="sx-bar"><i data-sx-fill></i></span></li>`).join('')}
+            </ol>
+            <p class="sx-what" data-sx-what></p>
+            <div class="sx-foot"><span data-sx-left></span><button type="button" class="sx-x" data-sx-cancel>Annuler</button></div>
+          </div>
           <div class="sx-head">
             <span class="eyebrow">Changer</span>
             <div class="seg mini" role="group" aria-label="Changement de voile">
@@ -386,6 +397,11 @@ export class Hud {
     r.querySelectorAll<HTMLButtonElement>('[data-say]').forEach((b) => b.addEventListener('click', () => this.h.say(b.textContent ?? '')));
     r.querySelectorAll<HTMLButtonElement>('[data-sail]').forEach((b) => b.addEventListener('click', () => this.h.sail(b.dataset.sail as SailId)));
     r.querySelectorAll<HTMLButtonElement>('[data-autosail]').forEach((b) => b.addEventListener('click', () => this.h.autoSail(b.dataset.autosail === '1')));
+    // annuler : on reclique sur l'ancienne voile ; reprendre : sur la nouvelle
+    q(r, '[data-sx-cancel]').addEventListener('click', () => {
+      const b = this.view.boat;
+      if (b?.sailTo) this.h.sail(b.sailBack ? b.sailTo : b.sail);
+    });
     r.querySelectorAll<HTMLButtonElement>('[data-unit]').forEach((b) =>
       b.addEventListener('click', () => {
         const u = b.dataset.unit as DistUnit;
@@ -520,7 +536,7 @@ export class Hud {
     const ntwa = norm180(v.twd - pend);
     const dh = norm180(pend - v.hdg);
     q(r, '[data-pend-v]').textContent = `OK ${deg(pend)}`;
-    const sail = b.autoSail ? bestSail(ntwa, v.tws) : b.sail;
+    const sail = b.autoSail ? bestSail(ntwa, v.tws) : targetSail(b);
     const bsp = boatSpeed(ntwa, v.tws, b.perf, sail);
     const tgt = v.wp;
     const vmg = tgt === null ? null : bsp * Math.cos((norm180(pend - tgt) * Math.PI) / 180);
@@ -533,7 +549,7 @@ export class Hud {
       warn.push(`${a < 90 && Math.abs(v.twa) < 90 ? 'Virement de bord' : 'Empannage'} : ${pen} min à −40 %.`);
     }
     const best = bestSail(ntwa, v.tws);
-    if (best !== b.sail) {
+    if (best !== targetSail(b)) {
       const nm = SAILS.find((x) => x.id === best)!.name;
       warn.push(b.autoSail ? `La voile auto enverra le ${nm} (15 min au ralenti).` : `Le ${nm} serait meilleur à cet angle (voile verrouillée).`);
     }
@@ -738,7 +754,7 @@ export class Hud {
     order.forEach((b, i) => {
       const li = document.createElement('li');
       if (b.isPlayer) li.className = 'me';
-      const status = b.finished !== null ? 'arrivé' : b.repair > 0 ? 'répare' : b.avarie ? 'avarie' : b.sleep > 0 ? 'dort' : b.sailChange > 0 ? 'change de voile' : b.penalty > 0 ? 'manœuvre' : b.spd < 4 ? 'à la peine' : '';
+      const status = b.finished !== null ? 'arrivé' : b.repair > 0 ? 'répare' : b.avarie ? 'avarie' : b.sleep > 0 ? 'dort' : b.sailTo !== null ? 'change de voile' : b.penalty > 0 ? 'manœuvre' : b.spd < 4 ? 'à la peine' : '';
       const gap = i === 0 ? '—' : b.finished !== null ? fmtDuration(b.finished - (order[0].finished ?? 0)) : `+${fmtDist(race.remaining(b) - leadRem, true)}`;
       const fe = b.fleetId ? IMOCA_RHUM_2026.find((f) => f.id === b.fleetId) : undefined;
       const who = fe ? `<span class="n"><b><span class="fl" aria-hidden="true">${FLAG[fe.nat] ?? ''}</span>${esc(fe.skipper)}</b><small>${esc(fe.boat)}</small></span>` : `<span class="n"><b>${esc(b.isPlayer ? 'Toi' : b.name)}</b>${b.isPlayer ? '<small>Sail Run · FRA 1</small>' : ''}</span>`;
@@ -766,21 +782,28 @@ export class Hud {
 
     // voiles
     const best = bestSail(p.twa, p.tws);
+    const tgt = targetSail(p);
+    const chg = p.sailTo;
     for (const s of SAILS) {
       const b = q<HTMLButtonElement>(r, `[data-sail="${s.id}"]`);
-      b.setAttribute('aria-pressed', String(p.sail === s.id));
+      b.setAttribute('aria-pressed', String(tgt === s.id));
       b.classList.toggle('best', s.id === best);
-      b.classList.toggle('busy', p.sail === s.id && p.sailChange > 0);
-      b.disabled = p.finished !== null;
-      q(r, `[data-sp="${s.id}"]`).textContent = p.sail === s.id && p.sailChange > 0 ? 'envoi…' : pct(sailFactor(s.id, p.twa, p.tws));
+      b.classList.toggle('busy', chg !== null && tgt === s.id);
+      // pendant un changement, seules les deux voiles en jeu répondent (annuler / reprendre)
+      b.disabled = p.finished !== null || (chg !== null && s.id !== p.sail && s.id !== chg);
+      const sp = chg === null ? pct(sailFactor(s.id, p.twa, p.tws)) : s.id === tgt ? (p.sailBack ? 'retour…' : 'envoi…') : s.id === p.sail || s.id === chg ? (p.sailBack ? 'reprendre' : 'annuler') : '—';
+      q(r, `[data-sp="${s.id}"]`).textContent = sp;
     }
     r.querySelectorAll<HTMLButtonElement>('[data-autosail]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.autosail === '1') === p.autoSail)));
-    const cur = SAILS.find((x) => x.id === p.sail)!;
-    const nowHtml = `<span class="sx-ic" style="--sc: ${SAIL_COLOR[p.sail]}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[p.sail]}</svg></span><span class="sx-t"><small>${p.sailChange > 0 ? 'Envoi en cours' : 'À poste'}</small><b>${esc(cur.name)}</b><em>${p.sailChange > 0 ? `encore ${Math.max(1, Math.round(p.sailChange * 60))} min` : `${pct(sailFactor(p.sail, p.twa, p.tws))} de la polaire${best !== p.sail ? ` · mieux : ${esc(SAILS.find((x) => x.id === best)!.name)}` : ''}`}</em></span><span class="sx-mode">${p.autoSail ? 'Voile auto' : 'Voile verrouillée'}</span>`;
     const nowEl = q(r, '[data-sx-now]');
-    if (nowEl.innerHTML !== nowHtml) nowEl.innerHTML = nowHtml;
-    nowEl.classList.toggle('busy', p.sailChange > 0);
-    nowEl.classList.toggle('warn', best !== p.sail && p.sailChange <= 0);
+    nowEl.hidden = chg !== null;
+    if (chg === null) {
+      const cur = SAILS.find((x) => x.id === p.sail)!;
+      const nowHtml = `<span class="sx-ic" style="--sc: ${SAIL_COLOR[p.sail]}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[p.sail]}</svg></span><span class="sx-t"><small>À poste</small><b>${esc(cur.name)}</b><em>${pct(sailFactor(p.sail, p.twa, p.tws))} de la polaire${best !== p.sail ? ` · mieux : ${esc(SAILS.find((x) => x.id === best)!.name)}` : ''}</em></span><span class="sx-mode">${p.autoSail ? 'Voile auto' : 'Voile verrouillée'}</span>`;
+      if (nowEl.innerHTML !== nowHtml) nowEl.innerHTML = nowHtml;
+      nowEl.classList.toggle('warn', best !== p.sail);
+    }
+    this.drawSailChange(p);
     const xkey = `${Math.round(p.tws)}.${Math.round(p.twa)}.${this.pending === null ? '' : Math.round(norm180(p.twd - this.pending))}`;
     if (xkey !== this.xkey && this.polarOpen) {
       this.xkey = xkey;
@@ -882,11 +905,66 @@ export class Hud {
     }
   }
 
+  /**
+   * Module de changement de voile : les 4 étapes, leur malus et la voile qui tire à chacune,
+   * l'avancement, le temps restant, et Annuler / Reprendre. Mis à jour sans reconstruire le DOM.
+   */
+  private sailChgKey = '';
+  private drawSailChange(p: Boat) {
+    const r = this.root;
+    const box = q(r, '[data-sx-chg]');
+    const to = p.sailTo;
+    box.hidden = to === null;
+    box.closest('.sailc')?.classList.toggle('chg', to !== null);
+    if (to === null) {
+      this.sailChgKey = '';
+      return;
+    }
+    const from = p.sail;
+    const name = (id: SailId) => SAILS.find((x) => x.id === id)!.name;
+    const key = `${from}.${to}.${p.sailBack}`;
+    if (key !== this.sailChgKey) {
+      this.sailChgKey = key;
+      const art = (id: SailId) => `<svg viewBox="0 0 56 60" style="--sc: ${SAIL_COLOR[id]}">${SAIL_ART[id]}</svg>`;
+      q(r, '[data-sx-from]').innerHTML = art(p.sailBack ? to : from);
+      q(r, '[data-sx-to]').innerHTML = art(p.sailBack ? from : to);
+      q(r, '[data-sx-kind]').textContent = p.sailBack ? 'Annulation · à l’envers' : 'Changement de voile';
+      q(r, '[data-sx-title]').textContent = p.sailBack ? `Retour au ${name(from)}` : `${name(from)} → ${name(to)}`;
+      q(r, '[data-sx-cancel]').textContent = p.sailBack ? 'Reprendre' : 'Annuler';
+      box.classList.toggle('back', p.sailBack);
+      r.querySelectorAll<HTMLElement>('[data-sx-step]').forEach((li) => {
+        const st = SAIL_STEPS[Number(li.dataset.sxStep)];
+        const w = st.works === 'to' ? to : from;
+        li.style.setProperty('--sc', SAIL_COLOR[w]);
+        q(li, '[data-sx-w]').textContent = name(w);
+      });
+    }
+    const cur = sailStep(p);
+    const prog = p.sailT / p.sailDur;
+    r.querySelectorAll<HTMLElement>('[data-sx-step]').forEach((li) => {
+      const i = Number(li.dataset.sxStep);
+      const st = SAIL_STEPS[i];
+      const start = i === 0 ? 0 : SAIL_STEPS[i - 1].end;
+      const k = Math.min(1, Math.max(0, (prog - start) / (st.end - start)));
+      li.className = i < cur ? 'done' : i === cur ? 'cur' : 'todo';
+      q(li, '[data-sx-fill]').style.width = `${(k * 100).toFixed(1)}%`;
+    });
+    const st = SAIL_STEPS[cur];
+    const stepEnd = (p.sailBack ? (cur === 0 ? 0 : SAIL_STEPS[cur - 1].end) : st.end) * p.sailDur;
+    const stepLeft = Math.max(1, Math.round(Math.abs(stepEnd - p.sailT) * 60));
+    const txt = p.sailBack ? st.undo : st.what;
+    const what = `${txt[0].toUpperCase()}${txt.slice(1)}. Le ${name(st.works === 'to' ? to : from)} tire, vitesse ${pct(st.f)} · ${stepLeft} min.`;
+    const whatEl = q(r, '[data-sx-what]');
+    if (whatEl.textContent !== what) whatEl.textContent = what;
+    q(r, '[data-sx-left]').textContent = `encore ${Math.max(1, Math.round(sailRemaining(p) * 60))} min`;
+  }
+
   /** Polaire : vitesse selon l'angle au vent pour chaque voile, à la force de vent actuelle. */
   private drawPolar(p: Boat) {
     const tws = p.tws;
+    const ws = workingSail(p);
     const a = Math.abs(p.twa);
-    const key = `${Math.round(tws * 2)}.${Math.round(a)}.${p.sail}.${p.spd.toFixed(1)}.${p.sailChange > 0}.${p.penalty > 0}.${p.sleep > 0}.${p.energy < 25}.${p.avarie}.${p.repair > 0}`;
+    const key = `${Math.round(tws * 2)}.${Math.round(a)}.${ws}.${p.spd.toFixed(1)}.${sailStep(p)}.${p.penalty > 0}.${p.sleep > 0}.${p.energy < 25}.${p.avarie}.${p.repair > 0}`;
     if (key === this.lastPolarKey) return;
     this.lastPolarKey = key;
     const r = this.root;
@@ -938,17 +1016,17 @@ export class Hud {
 
     // pourquoi
     const fb = sailFactor(best, a, tws);
-    const fc = sailFactor(p.sail, a, tws);
+    const fc = sailFactor(ws, a, tws);
     const bestName = SAILS.find((s) => s.id === best)!.name;
-    const curName = SAILS.find((s) => s.id === p.sail)!.name;
+    const curName = SAILS.find((s) => s.id === ws)!.name;
     const gain = Math.round((fb / fc - 1) * 100);
     q(r, '[data-pol-why]').innerHTML =
       `À <b>${Math.round(a)}°</b> du vent, la meilleure voile est le <b style="color: ${SAIL_COLOR[best]}">${esc(bestName)}</b> : ${esc(SAIL_WHY[best])}` +
-      (best === p.sail ? ' <span class="ok">C’est celle que tu as.</span>' : gain >= 1 ? ` <span class="warn">Avec ton ${esc(curName)}, tu perds ${gain} %.</span>` : ` <span class="muted">Ton ${esc(curName)} fait presque aussi bien.</span>`);
+      (best === ws ? ' <span class="ok">C’est celle que tu as.</span>' : gain >= 1 ? ` <span class="warn">Avec ton ${esc(curName)}, tu perds ${gain} %.</span>` : ` <span class="muted">Ton ${esc(curName)} fait presque aussi bien.</span>`);
 
     // décomposition de la vitesse
-    const base = boatSpeed(a, tws, p.perf, p.sail) / Math.max(0.01, fc);
-    const rows: string[] = [`<li><span>Ton bateau à ${Math.round(a)}° dans ${Math.round(tws)} nds</span><b>${kn(base)} nds</b></li>`, `<li><span><i style="background: ${SAIL_COLOR[p.sail]}"></i>Voile : ${esc(curName)}</span><b>${pct(fc)}</b></li>`];
+    const base = boatSpeed(a, tws, p.perf, ws) / Math.max(0.01, fc);
+    const rows: string[] = [`<li><span>Ton bateau à ${Math.round(a)}° dans ${Math.round(tws)} nds</span><b>${kn(base)} nds</b></li>`, `<li><span><i style="background: ${SAIL_COLOR[ws]}"></i>Voile : ${esc(curName)}</span><b>${pct(fc)}</b></li>`];
     for (const f of speedFactors(p)) rows.push(`<li class="loss"><span>${esc(f.label)}</span><b>−${Math.round((1 - f.f) * 100)} %</b></li>`);
     rows.push(`<li class="tot"><span>Vitesse actuelle</span><b>${kn(p.spd)} nds</b></li>`);
     q(r, '[data-pol-break]').innerHTML = rows.join('');
@@ -985,7 +1063,7 @@ export class Hud {
       msg = 'Ton skipper est épuisé : −12 % de vitesse.';
       action = 'sleep';
       btn = 'Sieste 2 h';
-    } else if (!p.autoSail && p.sailChange <= 0 && loss > 0.04) {
+    } else if (!p.autoSail && p.sailTo === null && loss > 0.04) {
       msg = `Mauvaise voile : le ${SAILS.find((s) => s.id === best)!.name} irait ${Math.round(loss * 100)} % plus vite.`;
       action = 'sail';
       btn = 'Voile auto';
