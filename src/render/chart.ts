@@ -661,6 +661,15 @@ export class ChartView {
     };
     hit.addEventListener('pointerup', end);
     hit.addEventListener('pointercancel', end);
+    // MapLibre n'écoute la molette que sur son conteneur : on lui renvoie celle reçue par le cercle, sinon le zoom s'arrête net dessus
+    el.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        this.map.getCanvas().dispatchEvent(new WheelEvent('wheel', e));
+      },
+      { passive: false },
+    );
   }
 
   private drawRing() {
