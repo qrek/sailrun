@@ -28,6 +28,8 @@ export interface HudHandlers {
   bearAway(): void;
   speed(id: string): void;
   pause(): void;
+  /** mode test : vent et houle imposés à la vue immersive (null = ceux de la course) */
+  devSea(o: { tws: number | null; twa: number | null; swell: number }): void;
   view(mode: ViewMode): void;
   menu(): void;
   say(text: string): void;
@@ -154,6 +156,13 @@ export class Hud {
       <div class="card seg devspeed" data-devspeed role="group" aria-label="Vitesse du temps (test)" hidden>
         <button type="button" data-pause aria-label="Pause" aria-pressed="false">${ICON.pause}</button>
         ${TIME_SCALES.map((t) => `<button type="button" data-speed="${t.id}" aria-pressed="false">${esc(t.label)}</button>`).join('')}
+      </div>
+      <div class="card devsea" data-devsea role="group" aria-label="Vent et houle de la vue immersive (test)" hidden>
+        <span class="eyebrow">Test · vent et houle</span>
+        <label><span>Vent</span><input type="range" data-dev="tws" min="0" max="45" step="1" aria-label="Force du vent (nœuds)" /><b data-dev-v="tws"></b></label>
+        <label><span>Angle</span><input type="range" data-dev="twa" min="-180" max="180" step="5" aria-label="Angle au vent (degrés)" /><b data-dev-v="twa"></b></label>
+        <label><span>Houle</span><input type="range" data-dev="swell" min="0.2" max="3" step="0.1" value="1" aria-label="Taille de la houle" /><b data-dev-v="swell"></b></label>
+        <button type="button" data-dev-reset>Revenir au vent de la course</button>
       </div>
 
       <nav class="rail" aria-label="Outils">
@@ -423,6 +432,18 @@ export class Hud {
     q(r, '[data-sleep]').addEventListener('click', () => this.h.sleep());
     q(r, '[data-pause]').addEventListener('click', () => this.h.pause());
     r.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => b.addEventListener('click', () => this.h.speed(b.dataset.speed!)));
+    r.querySelectorAll<HTMLInputElement>('[data-dev]').forEach((inp) =>
+      inp.addEventListener('input', () => {
+        this.devSea[inp.dataset.dev as 'tws' | 'twa' | 'swell'] = Number(inp.value);
+        this.h.devSea({ ...this.devSea });
+        this.showDevSea();
+      }),
+    );
+    q(r, '[data-dev-reset]').addEventListener('click', () => {
+      this.devSea = { tws: null, twa: null, swell: 1 };
+      this.h.devSea({ ...this.devSea });
+      this.showDevSea();
+    });
     r.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((b) => b.addEventListener('click', () => this.h.view(b.dataset.view as ViewMode)));
     q(r, '[data-map3d]').addEventListener('click', () => {
       const b = q(r, '[data-map3d]');
@@ -515,7 +536,27 @@ export class Hud {
 
   /** Mode test : accélération du temps visible (?dev dans l'adresse). */
   setDev(on: boolean) {
+    this.dev = on;
     q(this.root, '[data-devspeed]').hidden = !on;
+  }
+
+  private dev = false;
+  /** vent et houle imposés à la vue immersive (mode test), null = ceux de la course */
+  private devSea: { tws: number | null; twa: number | null; swell: number } = { tws: null, twa: null, swell: 1 };
+
+  /** Réglages de test : valeurs affichées, curseurs calés sur la course tant qu'on n'y a pas touché. */
+  private showDevSea(p = this.view.boat) {
+    const s = this.devSea;
+    const tws = s.tws ?? Math.round(p?.tws ?? 0);
+    const twa = s.twa ?? Math.round(p?.twa ?? 0);
+    const set = (k: string, v: number, text: string) => {
+      const inp = q<HTMLInputElement>(this.root, `[data-dev="${k}"]`);
+      if (document.activeElement !== inp) inp.value = String(v);
+      q(this.root, `[data-dev-v="${k}"]`).textContent = text;
+    };
+    set('tws', tws, `${tws} nds${s.tws === null ? ' · course' : ''}`);
+    set('twa', twa, `${twa}°${s.twa === null ? ' · course' : ''}`);
+    set('swell', s.swell, `×${s.swell.toFixed(1).replace('.', ',')}`);
   }
 
   /** dernier état du bateau affiché (pour les réglages à la souris) */
@@ -625,6 +666,8 @@ export class Hud {
     this.root.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(!paused && b.dataset.speed === speedId)));
     q(this.root, '[data-pause]').setAttribute('aria-pressed', String(paused));
     q(this.root, '[data-view="immersive"]').setAttribute('aria-pressed', String(immersive));
+    // le vent et la houle de test ne touchent que la vue immersive
+    q(this.root, '[data-devsea]').hidden = !(this.dev && immersive);
     // les prévisions concernent la carte : on les range en vue immersive
     if (immersive && this.openPanel === 'fc') this.toggle(null);
     q(this.root, '[data-open="fc"]').hidden = immersive;
@@ -824,6 +867,7 @@ export class Hud {
   update(race: Race, day: number) {
     const r = this.root;
     const p = race.player;
+    if (this.dev) this.showDevSea(p);
     const order = race.standings();
     const me = order.indexOf(p);
     q(r, '[data-pos]').textContent = `P${me + 1}`;

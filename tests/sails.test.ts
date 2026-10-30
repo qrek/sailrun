@@ -4,6 +4,7 @@ import { RACES } from '../src/data/races';
 import { DEFAULT_SETUP } from '../src/data/garage';
 import { Race } from '../src/sim/race';
 import { sailShow } from '../src/render/sailAnim';
+import { withTestWind } from '../src/render/immersive';
 import { BoatEvent, SAIL_STEPS, SailId, changeSail, sailRemaining, sailStep, speedFactors, startSleep, targetSail, workingSail } from '../src/sim/boat';
 
 const MIN = 1 / 60;
@@ -147,5 +148,26 @@ describe('rentabilité d’un changement de voile', () => {
     expect(up.breakEven!).toBeLessThan(2);
     const down = sailSwitch({ ...b, sail: 'spi' }, 'foc', 150, 16);
     expect(down.breakEven).toBeNull();
+  });
+});
+
+describe('vent de test de la vue immersive (?dev)', () => {
+  it('ne coupe pas la manœuvre du joueur : la vue montre son changement de voile en cours', () => {
+    const { p, run } = setup();
+    p.sail = 'code0';
+    expect(changeSail(p, 'spi')).toBe('start');
+    run(8);
+    const shown = withTestWind(p, { tws: 20, twa: 100 });
+    expect(shown).toMatchObject({ tws: 20, twa: 100, sail: 'code0', sailTo: 'spi', sailT: p.sailT });
+    expect(sailShow(shown).spi!.hoist).toBeGreaterThan(0);
+  });
+
+  it('le vent imposé change la vitesse, avec la voile que le bateau a vraiment', () => {
+    const { p } = setup();
+    p.sail = 'foc';
+    const slow = withTestWind(p, { tws: 8, twa: 100 }).spd;
+    const fast = withTestWind(p, { tws: 20, twa: 100 }).spd;
+    expect(fast).toBeGreaterThan(slow);
+    expect(withTestWind(p, { tws: null, twa: null })).toBe(p);
   });
 });

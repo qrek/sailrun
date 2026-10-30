@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { SailId } from '../sim/boat';
 import { SailChangeState, sailShow } from './sailAnim';
+import { Cloth, MAIN_BATTENS, SailAir, breath, camberAt, flutter, telltale } from './sailAir';
 
 /**
  * IMOCA 60 stylisé mais fidèle : coque lissée par sections (bouchains, étrave droite ou ronde),
@@ -38,6 +39,8 @@ export interface BoatRig {
   shared?: boolean;
   /** voiles d'avant du modèle codé (foc, code 0, spi) ; un modèle importé n'a que son `jib` */
   headsails?: Record<SailId, Headsail>;
+  /** le vent dans la grand-voile et ses penons (bateau du joueur, modèle codé) */
+  life?: (air: SailAir) => void;
 }
 
 /** Une voile d'avant : la voile elle-même, son boudin roulé le long du câble, et le boudin couché sur le pont. */
@@ -54,8 +57,8 @@ export interface Headsail {
   tackZ: number;
   /** angle de bordé (radians) selon l'angle au vent et l'ouverture de la bôme */
   trim: (a: number, boom: number) => number;
-  /** déroule la voile (0 → 1) ; `flap` > 0 : elle fasseye */
-  setOpen: (open: number, flap: number, time: number) => void;
+  /** déroule la voile (0 → 1) ; `flap` > 0 : elle fasseye ; `air` : le vent la fait vivre */
+  setOpen: (open: number, flap: number, time: number, air?: SailAir) => void;
 }
 
 /** Constructeur alternatif (modèle GLB importé) ; renvoie null pour garder le modèle codé. */
@@ -744,15 +747,19 @@ interface SailSpec {
   proportional: boolean;
   /** forme du guindant une fois la voile déroulée (voiles volantes : il se creuse) */
   bow?: (v: number) => THREE.Vector3;
+  /** comment le vent la fait vivre */
+  cloth: Cloth;
 }
 
 /**
  * Sommets d'une voile creusée. `open` < 1 : la voile est en partie roulée sur son guindant
- * (la corde raccourcit, le point d'écoute revient vers le câble) ; `flap` : elle fasseye.
+ * (la corde raccourcit, le point d'écoute revient vers le câble) ; `flap` : elle fasseye ;
+ * `air` : le vent la creuse en risée, l'aplatit dans la molle et fait battre sa chute.
  */
-function sailVerts(sp: SailSpec, pos: Float32Array, open = 1, flap = 0, phase = 0) {
+function sailVerts(sp: SailSpec, pos: Float32Array, open = 1, flap = 0, phase = 0, air?: SailAir) {
   const { NU, NV } = sp;
   const p0 = new THREE.Vector3();
+  const k = air ? breath(air) : 1;
   let n = 0;
   for (let j = 0; j <= NV; j++) {
     const v = j / NV;
@@ -760,14 +767,15 @@ function sailVerts(sp: SailSpec, pos: Float32Array, open = 1, flap = 0, phase = 
     if (sp.bow) p0.addScaledVector(sp.bow(v), open);
     const full = sp.chord(v) * (1 + sp.roach * Math.sin(v * Math.PI));
     const ch = full * open;
-    // vrillage : le haut de la voile s'ouvre (la corde tourne autour du guindant)
-    const tw = sp.twist * v;
+    // vrillage : le haut de la voile s'ouvre (la corde tourne autour du guindant), un peu plus en risée
+    const tw = sp.twist * v * k;
     const cx = Math.sin(tw);
     const cz = Math.cos(tw);
     for (let i = 0; i <= NU; i++) {
       const u = i / NU;
       // creux maximal vers 40 % de la corde, côté +x (trimBoat le passe sous le vent)
       let camber = sp.draft * ch * 4 * u * (1 - u) * (1 - 0.35 * u);
+      if (air) camber = camber * camberAt(sp.cloth, u, v, air) + flutter(sp.cloth, u, v, air) * open;
       if (flap) camber += flap * full * 0.045 * Math.sin(u * Math.PI) * Math.sin(u * 11 + v * 7 - phase * 9);
       pos[n++] = p0.x + camber * cz + u * ch * cx;
       pos[n++] = p0.y;
@@ -804,12 +812,18 @@ function sailGeometry(sp: SailSpec): THREE.BufferGeometry {
   return g;
 }
 
-function sailMesh(luff: (v: number) => THREE.Vector3, chord: (v: number) => number, draft: number, mat: THREE.Material, roach = 0, back?: THREE.Material, proportional = false, hero = false, twist = 0): THREE.Object3D {
-  const g = sailGeometry({ luff, chord, draft, roach, twist, NU: hero ? 22 : 10, NV: hero ? 40 : 16, proportional });
-  if (!back) return new THREE.Mesh(g, mat);
-  const grp = new THREE.Group();
-  grp.add(new THREE.Mesh(g, mat), new THREE.Mesh(g, back));
-  return grp;
+/** Voile recto verso (deux matériaux sur la même toile), et de quoi la refaçonner au vent. */
+function sailMesh(sp: SailSpec, mat: THREE.Material, back: THREE.Material) {
+  const geo = sailGeometry(sp);
+  const obj = new THREE.Group();
+  obj.add(new THREE.Mesh(geo, mat), new THREE.Mesh(geo, back));
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const blow = (air: SailAir) => {
+    sailVerts(sp, pos.array as Float32Array, 1, 0, 0, air);
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  };
+  return { obj, blow };
 }
 
 /** Le boudin couché sur le pont sort de l'écoutille avant, ici. */
@@ -829,6 +843,7 @@ function headsail(o: {
   mat: THREE.Material;
   roll: THREE.Material;
   trim: Headsail['trim'];
+  cloth: Cloth;
   hero: boolean;
 }): Headsail {
   const pivot = new THREE.Group();
@@ -836,7 +851,7 @@ function headsail(o: {
   const d = o.head.clone().sub(o.tack);
   const len = d.length();
   const axis = d.clone().normalize();
-  const sp: SailSpec = { luff: (v) => d.clone().multiplyScalar(v), chord: o.chord, draft: o.draft, roach: o.roach ?? 0, twist: o.hero ? o.twist : 0, NU: o.hero ? 22 : 10, NV: o.hero ? 40 : 16, proportional: false, bow: o.bow };
+  const sp: SailSpec = { luff: (v) => d.clone().multiplyScalar(v), chord: o.chord, draft: o.draft, roach: o.roach ?? 0, twist: o.hero ? o.twist : 0, NU: o.hero ? 22 : 10, NV: o.hero ? 40 : 16, proportional: false, bow: o.bow, cloth: o.cloth };
   const geo = sailGeometry(sp);
   const cloth = new THREE.Mesh(geo, o.mat);
   pivot.add(cloth);
@@ -858,11 +873,11 @@ function headsail(o: {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   let open = 1;
   let flapping = false;
-  const setOpen = (k: number, flap: number, time: number) => {
-    if (k === open && !flap && !flapping) return;
+  const setOpen = (k: number, flap: number, time: number, air?: SailAir) => {
+    if (k === open && !flap && !flapping && !air) return;
     open = k;
     flapping = flap > 0;
-    sailVerts(sp, pos.array as Float32Array, Math.max(0.002, k), flap, time);
+    sailVerts(sp, pos.array as Float32Array, Math.max(0.002, k), flap, time, air);
     pos.needsUpdate = true;
     geo.computeVertexNormals();
   };
@@ -1093,10 +1108,26 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
   const mainHead = mastTop - 0.03;
   const mainChord = (v: number) => 0.5 * (1 - v) + 0.09 * v;
   const mainLuff = (v: number) => new THREE.Vector3(0, mainFoot + (mainHead - mainFoot) * v, 0);
-  main.add(sailMesh(mainLuff, mainChord, 0.11, sailMat, 0.18, sailBack, true, hero, hero ? 0.22 : 0));
+  const mainSail = sailMesh(
+    { luff: mainLuff, chord: mainChord, draft: 0.11, roach: 0.18, twist: hero ? 0.22 : 0, NU: hero ? 22 : 10, NV: hero ? 40 : 16, proportional: true, cloth: 'main' },
+    sailMat,
+    sailBack,
+  );
+  main.add(mainSail.obj);
+  let life: BoatRig['life'];
   if (hero) {
-    // lattes : de petits tubes qui suivent le creux et le vrillage de la voile
-    for (const v of [0.14, 0.3, 0.46, 0.62, 0.78, 0.92]) {
+    // lattes : de petits tubes qui suivent le creux et le vrillage de la voile ; en risée, la toile se creuse
+    // et le haut s'ouvre d'autant : le groupe s'étire avec elle
+    const battens = new THREE.Group();
+    main.add(battens);
+    // penons au bout des lattes, sur la chute : ils filent dans le vent
+    const TT_LEN = 0.035;
+    const TT_W = 0.0045;
+    const TT_N = 6;
+    const ttMat = new THREE.MeshStandardMaterial({ color: '#d8382a', roughness: 0.8, side: THREE.DoubleSide });
+    materials.push(ttMat);
+    const tails: { at: THREE.Vector3; along: THREE.Vector3; side: THREE.Vector3; phase: number; pos: THREE.BufferAttribute; geo: THREE.BufferGeometry }[] = [];
+    MAIN_BATTENS.forEach((v, b) => {
       const p0 = mainLuff(v);
       const ch = mainChord(v) * (1 + 0.18 * Math.sin(v * Math.PI));
       const tw = 0.22 * v;
@@ -1106,8 +1137,35 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
         const camber = 0.11 * ch * 4 * u * (1 - u) * (1 - 0.35 * u) + 0.0025;
         pts.push(new THREE.Vector3(p0.x + camber * Math.cos(tw) + u * ch * Math.sin(tw), p0.y, p0.z + u * ch * Math.cos(tw) - camber * Math.sin(tw)));
       }
-      main.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.0022, 5), carbon));
-    }
+      battens.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.0022, 5), carbon));
+      const geo = new THREE.BufferGeometry();
+      const pos = new THREE.BufferAttribute(new Float32Array((TT_N + 1) * 2 * 3), 3);
+      geo.setAttribute('position', pos);
+      const idx: number[] = [];
+      for (let i = 0; i < TT_N; i++) idx.push(2 * i, 2 * i + 1, 2 * i + 2, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+      geo.setIndex(idx);
+      battens.add(new THREE.Mesh(geo, ttMat));
+      const along = new THREE.Vector3(Math.sin(tw), 0, Math.cos(tw));
+      tails.push({ at: p0.clone().addScaledVector(along, ch), along, side: new THREE.Vector3(Math.cos(tw), 0, -Math.sin(tw)), phase: b * 2.3, pos, geo });
+    });
+    const p = new THREE.Vector3();
+    life = (air) => {
+      mainSail.blow(air);
+      battens.scale.x = breath(air);
+      for (const tt of tails) {
+        const arr = tt.pos.array as Float32Array;
+        for (let i = 0; i <= TT_N; i++) {
+          const [a, l, h] = telltale(i / TT_N, air, tt.phase);
+          p.copy(tt.at).addScaledVector(tt.along, a * TT_LEN).addScaledVector(tt.side, l * TT_LEN);
+          p.y += h * TT_LEN;
+          arr.set([p.x, p.y + TT_W / 2, p.z, p.x, p.y - TT_W / 2, p.z], i * 6);
+        }
+        tt.pos.needsUpdate = true;
+        tt.geo.computeVertexNormals();
+        tt.geo.computeBoundingSphere();
+      }
+    };
+    life({ time: 0, strength: 0.5, gust: 1 });
   }
   if (hero) {
     const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.0065, 0.009, 0.5, 14), carbon);
@@ -1141,6 +1199,7 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
       mat: jibMat,
       roll: rollMat,
       trim: (_a, boom) => boom * 0.45,
+      cloth: 'jib',
       hero,
     }),
     code0: headsail({
@@ -1155,6 +1214,7 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
       mat: code0Mat,
       roll: rollMat,
       trim: (_a, boom) => boom * 0.52,
+      cloth: 'jib',
       hero,
     }),
     spi: headsail({
@@ -1168,6 +1228,7 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
       mat: spiMat,
       roll: rollSpi,
       trim: (a) => (Math.min(46, Math.max(14, a * 0.3)) * Math.PI) / 180,
+      cloth: 'spi',
       hero,
     }),
   };
@@ -1189,11 +1250,12 @@ export function buildBoat(look: BoatLook, hero = false, allowCustom = hero): Boa
   root.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) o.castShadow = true;
   });
-  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] }, spar, foilParts, headsails };
+  return { root, heel, main, jib, materials, parts: { coque: [hullMat, hullMatSb], foils: [foilMat], mat: [mastMat] }, spar, foilParts, headsails, life };
 }
 
 /** Oriente voiles et gîte selon l'angle au vent (twa > 0 : vent de tribord). */
-export function trimBoat(rig: BoatRig, twa: number, tws: number) {
+/** Bordé et gîte selon l'angle au vent et la force du vent ; en risée (`gust` > 1) le bateau gîte davantage. */
+export function trimBoat(rig: BoatRig, twa: number, tws: number, gust = 1) {
   const side = twa >= 0 ? 1 : -1;
   const a = Math.abs(twa);
   const boom = (Math.min(78, Math.max(6, a * 0.5)) * Math.PI) / 180;
@@ -1209,14 +1271,17 @@ export function trimBoat(rig: BoatRig, twa: number, tws: number) {
     rig.jib.rotation.y = -side * boom * 0.45;
     rig.jib.scale.x = -side;
   }
-  rig.heel.rotation.z = (side * Math.min(1, tws / 25) * (a < 120 ? 15 : 6) * Math.PI) / 180;
+  const puff = Math.min(1.4, Math.max(0.6, 1 + 1.6 * (gust - 1)));
+  rig.heel.rotation.z = (side * Math.min(1, tws / 25) * (a < 120 ? 15 : 6) * puff * Math.PI) / 180;
 }
 
 /**
  * Voiles d'avant selon la voile à poste et le changement en cours : boudin sur le pont, hissage,
  * déroulé, enroulement de l'ancienne. Sans effet sur un modèle importé (il n'a que son foc).
+ * Avec `air`, le vent fait vivre la toile (grand-voile, penons et voile d'avant à poste), à chaque image.
  */
-export function showSails(rig: BoatRig, b: SailChangeState, time: number) {
+export function showSails(rig: BoatRig, b: SailChangeState, time: number, air?: SailAir) {
+  if (air) rig.life?.(air);
   const hs = rig.headsails;
   if (!hs) return;
   const show = sailShow(b);
@@ -1226,7 +1291,7 @@ export function showSails(rig: BoatRig, b: SailChangeState, time: number) {
     h.pivot.visible = !!s;
     h.deck.visible = !!s && s.deck > 0.01;
     if (!s) continue;
-    h.setOpen(s.open, s.flap, time);
+    h.setOpen(s.open, s.flap, time, air);
     h.cloth.visible = s.open > 0.01;
     h.furled.visible = s.hoist > 0.005 && s.roll > 0.02;
     h.furled.scale.set(s.roll, Math.max(0.001, s.hoist * h.len), s.roll);

@@ -263,6 +263,8 @@ export class Game {
     const race = this.race!;
     this.screen = 'race';
     this.paused = false;
+    // nouvelle interface : les réglages de test repartent du vent de la course
+    Object.assign(this.immersive.test, { tws: null, twa: null, swell: 1 });
     this.finishShown = race.player.finished !== null;
     this.garageUI = null;
     this.immersiveOn = false;
@@ -430,6 +432,7 @@ export class Game {
         this.paused = !this.paused;
         this.syncControls();
       },
+      devSea: (o) => Object.assign(this.immersive.test, o),
       view: (m) => this.setView(m),
       menu: () => this.showMenu(),
       say: (text) => {
