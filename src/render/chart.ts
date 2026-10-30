@@ -238,10 +238,14 @@ export class ChartView {
     // relief 3D seulement à la demande (bouton Relief 3D) : c'est la partie la plus lourde de la carte
     m.addImage('boat', boatIcon(), { sdf: true });
     const src = (id: string) => m.addSource(id, { type: 'geojson', data: EMPTY });
-    for (const id of ['tracks', 'route', 'cplegs', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
+    for (const id of ['tracks', 'route', 'cplegs', 'rpath', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
     m.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#ffd84d', 'line-width': 1.6, 'line-opacity': 0.75, 'line-dasharray': [2, 2] } });
-    m.addLayer({ id: 'cplegs-c', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0c2c48', 'line-width': 5, 'line-opacity': 0.35 } });
-    m.addLayer({ id: 'cplegs', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffd84d', 'line-width': 2.5, 'line-dasharray': [2.5, 1.5] } });
+    // tracé voulu (droit d'un point à l'autre), fin et discret
+    m.addLayer({ id: 'cplegs', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 1.2, 'line-opacity': 0.55, 'line-dasharray': [2, 2] } });
+    // trajet simulé, coloré selon la voile ; rouge hachuré quand on remonte au vent
+    m.addLayer({ id: 'rpath-c', type: 'line', source: 'rpath', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0c2c48', 'line-width': 7, 'line-opacity': 0.4 } });
+    m.addLayer({ id: 'rpath', type: 'line', source: 'rpath', filter: ['!=', ['get', 'k'], 'up'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['match', ['get', 'k'], 'foc', '#22D3EE', 'code0', '#A78BFA', 'spi', '#FB7185', '#ffd84d'], 'line-width': 4 } });
+    m.addLayer({ id: 'rpath-up', type: 'line', source: 'rpath', filter: ['==', ['get', 'k'], 'up'], layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#ff5d6c', 'line-width': 4, 'line-dasharray': [1.2, 1] } });
     m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 3, 1.6], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.7] } });
     m.addLayer({ id: 'proj', type: 'line', source: 'proj', paint: { 'line-color': '#ffffff', 'line-width': 1.6, 'line-dasharray': [1, 1.5], 'line-opacity': 0.9 } });
     m.addLayer({ id: 'projpts', type: 'circle', source: 'projpts', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff', 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
@@ -250,7 +254,7 @@ export class ChartView {
     m.addLayer({ id: 'finishlbl', type: 'symbol', source: 'finish', layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-offset': [0, 1.4], 'text-letter-spacing': 0.1, 'text-allow-overlap': true }, paint: { 'text-color': '#ffd84d', 'text-halo-color': '#0c2c48', 'text-halo-width': 1.5 } });
     m.addLayer({ id: 'marks', type: 'circle', source: 'marks', paint: { 'circle-radius': 6, 'circle-color': ['case', ['get', 'next'], '#3fe3c9', '#ff8a3d'], 'circle-stroke-color': '#06111a', 'circle-stroke-width': 2, 'circle-opacity': ['case', ['get', 'done'], 0.3, 1] } });
     m.addLayer({ id: 'markslbl', type: 'symbol', source: 'marks', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, 1.3], 'text-letter-spacing': 0.08, 'text-allow-overlap': true }, paint: { 'text-color': ['case', ['get', 'next'], '#3fe3c9', '#ffb37a'], 'text-halo-color': '#06111a', 'text-halo-width': 1.5 } });
-    m.addLayer({ id: 'ghost', type: 'circle', source: 'ghost', paint: { 'circle-radius': 7, 'circle-color': 'rgba(255,216,77,0.25)', 'circle-stroke-color': '#ffd84d', 'circle-stroke-width': 2 } });
+    m.addLayer({ id: 'ghost', type: 'circle', source: 'ghost', paint: { 'circle-radius': 10, 'circle-color': 'rgba(255,255,255,0.3)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
     m.addLayer({ id: 'me-halo', type: 'circle', source: 'boats', filter: ['==', ['get', 'me'], true], paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.12)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2, 'circle-pitch-alignment': 'map' } });
     m.addLayer({
       id: 'boats',
@@ -362,6 +366,24 @@ export class ChartView {
       const line = from && cps.length ? [from, ...cps.map((c) => c.pos)] : [];
       this.set('cplegs', line.length > 1 ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line } } : EMPTY);
     });
+  }
+
+  /** Trajet simulé de la route : segments colorés par voile (foc, code0, spi) ou « up » quand on tire des bords. */
+  setRoutePath(segs: { coords: LonLat[]; k: string }[]) {
+    this.set('rpath', { type: 'FeatureCollection', features: segs.filter((g) => g.coords.length > 1).map((g) => ({ type: 'Feature', properties: { k: g.k }, geometry: { type: 'LineString', coordinates: g.coords } })) });
+  }
+
+  /** Bateau fantôme posé à une position donnée (frise du temps), null = masqué. */
+  setGhostPos(p: LonLat | null) {
+    this.set('ghost', p ? { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: p } } : EMPTY);
+  }
+
+  /** Coordonnées écran (dans la page) d'un point géographique. */
+  screenOf(p: LonLat): [number, number] | null {
+    if (!this.ready || this.el.hidden) return null;
+    const a = this.map.project(p);
+    const r = this.el.getBoundingClientRect();
+    return [a.x + r.left, a.y + r.top];
   }
 
   /** Mode pose : le pointeur devient une mire, un clic sur la mer pose un checkpoint. */

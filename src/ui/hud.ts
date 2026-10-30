@@ -1,4 +1,4 @@
-import { AVARIES, Boat, REPAIR_HOURS, SAILS, SAIL_STEPS, SailId, bestSail, boatSpeed, sailFactor, sailRemaining, sailStep, speedFactors, targetSail, workingSail } from '../sim/boat';
+import { AVARIES, Boat, REPAIR_HOURS, SAILS, SAIL_STEPS, SailId, bestSail, boatSpeed, sailFactor, sailRemaining, sailStep, sailSwitch, speedFactors, targetSail, workingSail } from '../sim/boat';
 import { bearing, dist, fmtInt, move, norm180 } from '../sim/geo';
 import { Race, TIME_SCALES } from '../sim/race';
 import { GridWind } from '../sim/gfsWind';
@@ -38,21 +38,44 @@ export interface HudHandlers {
   units(u: DistUnit): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
-  /** mode pose de checkpoints (un clic sur la carte = un point) */
-  cpPlace(on: boolean): void;
+  /** Barre (on navigue) ou Route (on pose ses points sur la carte) */
+  setMode(m: 'barre' | 'route'): void;
   cpDelete(i: number): void;
+  /** le prochain point posé s'insère après le point i */
+  cpInsertAfter(i: number): void;
   cpClear(): void;
-  cpFocus(i: number): void;
+  /** frise du temps : heures depuis maintenant */
+  scrub(h: number): void;
+  /** fenêtre 3D : ouverte / réduite, ou plein écran */
+  pip(open: boolean): void;
+  pipFull(): void;
 }
 
-/** Un checkpoint, prêt à afficher. */
-export interface CpRow {
+/** Bulle d'un point de route, posée à côté du repère sur la carte. */
+export interface CpBubble {
+  n: number;
+  x: number;
+  y: number;
+  eta: string;
   dist: string;
   hdg: number;
-  eta: string;
   pace: string;
   upwind: boolean;
-  sel: boolean;
+}
+
+/** Barre de route : résumé, points sur la frise, suivi. */
+export interface RouteBar {
+  count: number;
+  total: string;
+  arrival: string;
+  following: boolean;
+  /** position des points sur la frise (0 à 1) */
+  marks: number[];
+  /** graduations de la frise */
+  ticks: { at: number; label: string; day: boolean }[];
+  inserting: number | null;
+  /** durée couverte par la frise (h) */
+  hours: number;
 }
 
 type AlertAction = 'sleep' | 'repair' | 'bear' | 'sail';
@@ -71,6 +94,7 @@ const FC_MAX = 120;
 const ICON_PLAY = '<svg width="14" height="16" viewBox="0 0 14 16" aria-hidden="true"><path d="M2,1.5 L12.5,8 L2,14.5 Z" fill="currentColor"/></svg>';
 const ICON_ROUTE = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 18 V3" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M5 3.5 H15 L12.5 7 L15 10.5 H5" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>';
 const ICON_FLAG = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 11 V1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M2.5 2 H10 L8.3 4.3 L10 6.6 H2.5 Z" fill="currentColor"/></svg>';
+const ICON_HELM = '<svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10" cy="10" r="1.8" fill="currentColor"/><path d="M10 1.5 V4 M10 16 V18.5 M1.5 10 H4 M16 10 H18.5 M4 4 L5.8 5.8 M14.2 14.2 L16 16 M4 16 L5.8 14.2 M14.2 5.8 L16 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const ICON_POLAR = '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M3,2 V18 M3,4 C10,4 16,8 16,12 C16,15 12,17 3,17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_TROPHY = '<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M5 2 H13 V7 A4 4 0 0 1 5 7 Z M5 4 H2 A3 3 0 0 0 5 8 M13 4 H16 A3 3 0 0 1 13 8 M9 11 V14 M6 16 H12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_WINDS = '<svg width="20" height="16" viewBox="0 0 20 16" aria-hidden="true"><path d="M1 5 H12 A3 3 0 1 0 9 2 M1 10 H16 A3 3 0 1 1 13 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
@@ -133,7 +157,6 @@ export class Hud {
       </div>
 
       <nav class="rail" aria-label="Outils">
-        <button type="button" data-open="route" aria-expanded="false">${ICON_ROUTE}<span>Checkpoints</span><b class="rbadge" data-rt-badge hidden>0</b></button>
         <button type="button" data-open="fc" aria-expanded="false">${ICON_WINDS}<span>Prévisions</span><b class="rbadge" data-fc-badge hidden></b></button>
         <button type="button" data-open="tele" aria-expanded="false">${ICON_TELE}<span>Télémétrie</span></button>
         <button type="button" data-open="board" aria-expanded="false" data-board-btn>${ICON_TROPHY}<span>Classement</span></button>
@@ -144,25 +167,6 @@ export class Hud {
         <button type="button" data-view="reset">${ICON_TARGET}<span>Recentrer</span></button>
         <button type="button" data-open="set" aria-expanded="false">${ICON_GEAR}<span>Options</span></button>
       </nav>
-
-      <div class="card panel rt" data-panel="route" hidden>
-        <div class="p-head"><span class="eyebrow">Checkpoints</span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
-        <p class="rt-intro" data-cp-intro>Pose tes points de passage sur la carte : le pilote file droit vers chacun, dans l’ordre. Face au vent, il serre le vent au plus près : à toi de placer tes points pour tirer tes bords.</p>
-        <button type="button" class="rt-go" data-cp-place><span>+ Poser des checkpoints</span></button>
-        <div class="rt-res" data-cp-res hidden>
-          <div class="rt-kpi cp-kpi">
-            <div><b data-cpk="dist">—</b><small>à parcourir</small></div>
-            <div><b data-cpk="eta">—</b><small data-cpk="etal">au dernier point</small></div>
-          </div>
-          <ol class="rt-steps cp-list" data-cp-list></ol>
-          <div class="rt-foot">
-            <button type="button" class="rt-follow" data-cp-follow></button>
-          </div>
-          <button type="button" class="pill ghost rt-clear" data-cp-clear>Tout effacer</button>
-          <p class="rt-src">Glisse un point sur la carte pour le déplacer. Les heures sont des estimations sur les prévisions de vent.</p>
-        </div>
-      </div>
-      <div class="cp-hint" data-cp-hint hidden><span data-cp-hint-t>Touche la mer pour poser le checkpoint 1</span><button type="button" data-cp-done>Terminé</button></div>
 
       <div class="card panel fc" data-panel="fc" data-fc-panel hidden>
         <div class="p-head"><span class="fc-info"><span class="fc-label" data-fc-label>Prévisions</span><span class="fc-sub" data-fc-sub>Glisse pour voir le vent à venir</span></span><button type="button" class="x" data-close aria-label="Fermer">${ICON_CLOSE}</button></div>
@@ -262,7 +266,7 @@ export class Hud {
         <div class="card helm2">
           <div class="seg mini modes" role="group" aria-label="Mode de pilotage">
             <button type="button" data-mode="hdg" aria-pressed="false" title="Le bateau garde le cap que tu as validé">${ICON_LOCK} Cap fixe</button>
-            <button type="button" data-mode="auto" aria-pressed="false" title="Le pilote file vers tes checkpoints, l’un après l’autre">${ICON_FLAG} Checkpoints</button>
+            <button type="button" data-mode="auto" aria-pressed="false" title="Le pilote suit ta route, point après point">${ICON_FLAG} Suivre la route</button>
           </div>
           <div class="h-auto" data-auto-info></div>
           ${pilotDial()}
@@ -297,9 +301,45 @@ export class Hud {
             </div>
           </div>
           <div class="sails" role="group" aria-label="Voiles">
-            ${SAILS.map((s) => `<button type="button" class="sail" data-sail="${s.id}" aria-pressed="false" style="--sc: ${SAIL_COLOR[s.id]}" title="${esc(s.name)} : ${esc(s.hint)}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[s.id]}</svg><span class="sn">${esc(s.name)}</span><span class="sp" data-sp="${s.id}">100 %</span></button>`).join('')}
+            ${SAILS.map((s) => `<button type="button" class="sail" data-sail="${s.id}" aria-pressed="false" style="--sc: ${SAIL_COLOR[s.id]}" title="${esc(s.name)} : ${esc(s.hint)}"><svg viewBox="0 0 56 60" aria-hidden="true">${SAIL_ART[s.id]}</svg><span class="sn">${esc(s.name)}</span><span class="sp" data-sp="${s.id}">100 %</span><span class="sv" data-sv="${s.id}"></span></button>`).join('')}
           </div>
         </div>
+      </div>
+
+      <div class="modesw" role="tablist" aria-label="Mode de jeu">
+        <button type="button" role="tab" data-msw="barre" aria-selected="true">${ICON_HELM}<span>Barre</span></button>
+        <button type="button" role="tab" data-msw="route" aria-selected="false">${ICON_ROUTE}<span>Route</span><b class="msw-n" data-msw-n hidden>0</b></button>
+      </div>
+
+      <div class="card routebar" data-routebar hidden>
+        <div class="rb-top">
+          <div class="rb-sum" data-rb-sum><b>Touche la mer pour poser ton premier point</b><small>Le pilote filera droit d’un point à l’autre. Face au vent, il serre le vent au plus près : place tes points pour tirer tes bords.</small></div>
+          <div class="rb-act">
+            <button type="button" class="pill ghost" data-rb-clear hidden>Effacer</button>
+            <button type="button" class="rb-go" data-rb-go disabled>Lancer la route</button>
+          </div>
+        </div>
+        <div class="tstrip" data-tstrip>
+          <button type="button" class="ts-play" data-ts-play aria-label="Faire défiler le temps">${ICON_PLAY}</button>
+          <div class="ts-track">
+            <div class="ts-ticks" data-ts-ticks></div>
+            <div class="ts-marks" data-ts-marks></div>
+            <input type="range" min="0" max="${FC_MAX}" step="0.5" value="0" data-ts-range aria-label="Heure affichée sur la carte">
+          </div>
+          <span class="ts-now" data-ts-label>Maintenant</span>
+        </div>
+      </div>
+
+      <div class="cpbub" data-cpbub hidden>
+        <div class="cb-h"><b data-cb-n>Point 1</b><span data-cb-eta></span></div>
+        <div class="cb-r" data-cb-r></div>
+        <div class="cb-a"><button type="button" data-cb-ins>+ Point après</button><button type="button" class="del" data-cb-del>Supprimer</button></div>
+      </div>
+
+      <div class="pipw" data-pip>
+        <div class="pip-frame" data-pip-frame role="button" tabindex="0" aria-label="Vue 3D du bateau : toucher pour le plein écran"><span class="pip-l">Vue bateau · direct</span><span class="pip-full">Plein écran</span></div>
+        <button type="button" class="pip-min" data-pip-min aria-label="Réduire la vue 3D">−</button>
+        <button type="button" class="pip-open" data-pip-open aria-label="Afficher la vue 3D">${ICON_EYE}<span>3D</span></button>
       </div>
 
       <div class="vhf" data-vhf>
@@ -336,8 +376,9 @@ export class Hud {
     const dial = q(r, '[data-pdial]');
     let dialOn = false;
     const fromDial = (e: PointerEvent) => {
+      // cadran nord en haut : l'angle du pointeur est directement le cap
       const a = dialAngle(dial, e.clientX, e.clientY);
-      this.setPending(Math.round(this.view.hdg + a));
+      this.setPending(Math.round(a));
     };
     dial.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -375,11 +416,7 @@ export class Hud {
         this.cancelPending();
         if (m === 'auto') {
           if (this.cpCount) this.h.setAuto(true);
-          else {
-            // pas encore de checkpoint : on ouvre le panneau et on passe en pose
-            if (this.openPanel !== 'route') this.toggle('route');
-            this.h.cpPlace(true);
-          }
+          else this.h.setMode('route'); // pas encore de route : on va la tracer
         } else this.h.lock('hdg');
       }),
     );
@@ -440,17 +477,20 @@ export class Hud {
     q(r, '[data-fc-play]').addEventListener('click', () => this.h.forecastPlay());
     q(r, '[data-fc-now]').addEventListener('click', () => this.h.forecast(0));
 
-    // checkpoints
-    q(r, '[data-cp-place]').addEventListener('click', () => this.h.cpPlace(!this.placing));
-    q(r, '[data-cp-done]').addEventListener('click', () => this.h.cpPlace(false));
-    q(r, '[data-cp-clear]').addEventListener('click', () => this.h.cpClear());
-    q(r, '[data-cp-follow]').addEventListener('click', () => (this.cpFollowing ? this.h.lock('hdg') : this.h.setAuto(true)));
-    q(r, '[data-cp-list]').addEventListener('click', (e) => {
-      const del = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-del]');
-      if (del) return this.h.cpDelete(Number(del.dataset.del));
-      const li = (e.target as HTMLElement).closest<HTMLElement>('li[data-i]');
-      if (li) this.h.cpFocus(Number(li.dataset.i));
-    });
+    // mode Barre / Route
+    r.querySelectorAll<HTMLButtonElement>('[data-msw]').forEach((b) => b.addEventListener('click', () => this.h.setMode(b.dataset.msw as 'barre' | 'route')));
+    q(r, '[data-rb-go]').addEventListener('click', () => (this.cpFollowing ? this.h.lock('hdg') : this.h.setAuto(true)));
+    q(r, '[data-rb-clear]').addEventListener('click', () => this.h.cpClear());
+    q(r, '[data-cb-del]').addEventListener('click', () => this.h.cpDelete(this.bubN));
+    q(r, '[data-cb-ins]').addEventListener('click', () => this.h.cpInsertAfter(this.bubN));
+    // frise du temps
+    const ts = q<HTMLInputElement>(r, '[data-ts-range]');
+    ts.addEventListener('input', () => this.h.scrub(Number(ts.value)));
+    q(r, '[data-ts-play]').addEventListener('click', () => this.h.forecastPlay());
+    // fenêtre 3D
+    q(r, '[data-pip-min]').addEventListener('click', () => this.h.pip(false));
+    q(r, '[data-pip-open]').addEventListener('click', () => this.h.pip(true));
+    q(r, '[data-pip-frame]').addEventListener('click', () => this.h.pipFull());
 
     q(r, '[data-alert-btn]').addEventListener('click', () => {
       const a = this.alertAction;
@@ -520,7 +560,20 @@ export class Hud {
     const r = this.root;
     const v = this.view;
     const pend = this.pending;
-    setPilotDial(r, { hdg: v.hdg, twd: v.twd, twa: v.twa, cons: v.auto ? null : v.hdg, pending: pend, wp: v.wp });
+    const b0 = v.boat;
+    setPilotDial(r, {
+      hdg: v.hdg,
+      twd: v.twd,
+      twa: pend === null ? v.twa : norm180(v.twd - pend),
+      tws: v.tws,
+      spd: pend !== null && b0 ? boatSpeed(norm180(v.twd - pend), v.tws, b0.perf, b0.autoSail ? bestSail(norm180(v.twd - pend), v.tws) : targetSail(b0)) : (b0?.spd ?? 0),
+      sailColor: SAIL_COLOR[b0 ? workingSail(b0) : 'foc'],
+      best: (a) => bestSail(a, v.tws),
+      colors: SAIL_COLOR,
+      cons: v.auto ? null : v.hdg,
+      pending: pend,
+      wp: v.wp,
+    });
     const deg = (x: number) => `${String(Math.round(((x % 360) + 360) % 360)).padStart(3, '0')}°`;
     const side = (twa: number) => `${Math.round(Math.abs(twa))}° ${twa < 0 ? 'bâb' : 'tri'}`;
     r.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === (v.auto ? 'auto' : 'hdg'))));
@@ -597,47 +650,83 @@ export class Hud {
 
   private cpFollowing = false;
   private cpCount = 0;
-  private placing = false;
+  private bubN = 0;
 
-  /** Mode pose : bandeau d'aide, bouton du panneau. */
-  setPlacing(on: boolean, next: number) {
+  /** Barre ou Route : le cockpit laisse la place à la barre de route et à la frise du temps. */
+  setMode(m: 'barre' | 'route') {
     const r = this.root;
-    this.placing = on;
-    q(r, '[data-cp-hint]').hidden = !on;
-    q(r, '[data-cp-hint-t]').textContent = `Touche la mer pour poser le checkpoint ${next}`;
-    const b = q(r, '[data-cp-place]');
-    b.classList.toggle('on', on);
-    q(b, 'span').textContent = on ? 'Terminé' : '+ Poser des checkpoints';
-    // sur téléphone, le panneau laisse la place à la carte pendant la pose
-    if (on && window.innerWidth <= 760 && this.openPanel === 'route') this.toggle(null);
+    r.querySelectorAll<HTMLButtonElement>('[data-msw]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.msw === m)));
+    q(r, '[data-routebar]').hidden = m !== 'route';
+    r.querySelector<HTMLElement>('.cockpit')!.hidden = m === 'route';
+    r.classList.toggle('route-mode', m === 'route');
+    if (m !== 'route') this.showBubble(null);
+    if (m === 'route' && this.openPanel === 'fc') this.toggle(null);
   }
 
-  /** Liste des checkpoints, total, suivi. */
-  setCheckpoints(d: { rows: CpRow[]; total: string; eta: string; etaLabel: string; following: boolean }) {
+  /** Barre de route : résumé, frise, bouton Lancer. */
+  setRouteBar(d: RouteBar) {
     const r = this.root;
     this.cpFollowing = d.following;
-    this.cpCount = d.rows.length;
-    q(r, '[data-cp-res]').hidden = !d.rows.length;
-    q(r, '[data-cp-intro]').hidden = !!d.rows.length;
-    const badge = q(r, '[data-rt-badge]');
-    badge.hidden = !d.rows.length;
-    badge.textContent = String(d.rows.length);
-    if (!d.rows.length) return;
-    q(r, '[data-cpk="dist"]').textContent = d.total;
-    q(r, '[data-cpk="eta"]').textContent = d.eta;
-    q(r, '[data-cpk="etal"]').textContent = d.etaLabel;
-    q(r, '[data-cp-list]').innerHTML = d.rows
-      .map(
-        (o, i) => `<li data-i="${i}" class="${i === 0 ? 'next' : ''}${o.sel ? ' sel' : ''}${o.upwind ? ' up' : ''}">
-          <span class="ic">${i + 1}</span>
-          <span class="tx"><small>${esc(o.eta)}</small><b>${esc(o.dist)} · cap ${String(o.hdg).padStart(3, '0')}°</b><em>${o.upwind ? 'face au vent : le pilote tirera des bords au plus près' : esc(o.pace)}</em></span>
-          <button type="button" class="del" data-del="${i}" aria-label="Supprimer le checkpoint ${i + 1}">${ICON_CLOSE}</button>
-        </li>`,
-      )
-      .join('');
-    const f = q(r, '[data-cp-follow]');
-    f.innerHTML = d.following ? '<b>Le pilote suit tes checkpoints</b><small>Toucher pour repasser en cap fixe</small>' : '<b>Suivre les checkpoints</b><small>Le pilote file vers le point 1, puis le suivant</small>';
-    f.classList.toggle('on', d.following);
+    this.cpCount = d.count;
+    const n = q(r, '[data-msw-n]');
+    n.hidden = !d.count;
+    n.textContent = String(d.count);
+    const sum = q(r, '[data-rb-sum]');
+    const html = d.inserting !== null
+      ? `<b>Touche la mer pour insérer un point après le ${d.inserting + 1}</b><small>Ou touche un point pour annuler.</small>`
+      : d.count
+        ? `<b>${d.count}/5 points · ${esc(d.total)}</b><small>${esc(d.arrival)}${d.following ? ' · le pilote suit ta route' : ''}</small>`
+        : `<b>Touche la mer pour poser ton premier point</b><small>Le pilote filera droit d’un point à l’autre. Face au vent, il serre le vent au plus près : place tes points pour tirer tes bords.</small>`;
+    if (sum.innerHTML !== html) sum.innerHTML = html;
+    const go = q<HTMLButtonElement>(r, '[data-rb-go]');
+    go.disabled = !d.count;
+    go.textContent = d.following ? 'Route lancée · arrêter' : 'Lancer la route';
+    go.classList.toggle('on', d.following);
+    q(r, '[data-rb-clear]').hidden = !d.count;
+    q<HTMLInputElement>(r, '[data-ts-range]').max = String(d.hours);
+    q(r, '[data-ts-ticks]').innerHTML = d.ticks.map((t) => `<span class="${t.day ? 'd' : ''}" style="left: ${(t.at * 100).toFixed(2)}%">${esc(t.label)}</span>`).join('');
+    q(r, '[data-ts-marks]').innerHTML = d.marks.map((m, i) => (m > 1 ? '' : `<b style="left: ${(m * 100).toFixed(2)}%">${i + 1}</b>`)).join('');
+  }
+
+  /** Bulle d'un point (null = fermée). */
+  showBubble(d: CpBubble | null) {
+    const el = q(this.root, '[data-cpbub]');
+    if (!d) {
+      el.hidden = true;
+      return;
+    }
+    this.bubN = d.n;
+    el.hidden = false;
+    q(el, '[data-cb-n]').textContent = `Point ${d.n + 1}`;
+    q(el, '[data-cb-eta]').textContent = d.eta;
+    q(el, '[data-cb-r]').innerHTML = `<span><b>${esc(d.dist)}</b> · cap ${String(d.hdg).padStart(3, '0')}°</span><span class="${d.upwind ? 'up' : ''}">${d.upwind ? 'Face au vent : le pilote tirera des bords' : esc(d.pace)}</span>`;
+    const w = el.offsetWidth || 220;
+    const h = el.offsetHeight || 110;
+    const x = Math.max(8, Math.min(window.innerWidth - w - 8, d.x - w / 2));
+    const y = d.y - h - 26 < 8 ? d.y + 26 : d.y - h - 26;
+    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+  }
+
+  /** Frise : position du curseur et étiquette (heure, vent au point fantôme). */
+  setStrip(hours: number, span: number, label: string, playing: boolean) {
+    const r = this.root;
+    const ts = q<HTMLInputElement>(r, '[data-ts-range]');
+    if (document.activeElement !== ts || playing) ts.value = String(hours);
+    ts.style.setProperty('--p', `${(hours / span) * 100}%`);
+    const l = q(r, '[data-ts-label]');
+    if (l.innerHTML !== label) l.innerHTML = label;
+    const play = q(r, '[data-ts-play]');
+    play.innerHTML = playing ? ICON.pause : ICON_PLAY;
+  }
+
+  /** Fenêtre 3D ouverte ou réduite ; rectangle à l'écran pour le rendu. */
+  setPip(open: boolean) {
+    q(this.root, '[data-pip]').classList.toggle('open', open);
+  }
+  pipRect(): DOMRect | null {
+    const f = q(this.root, '[data-pip-frame]');
+    const r = f.getBoundingClientRect();
+    return r.width > 10 && f.offsetParent !== null ? r : null;
   }
 
   /** Ligne d'état du pilote Auto (ce qu'il suit, prochain ordre). */
@@ -791,8 +880,29 @@ export class Hud {
       b.classList.toggle('busy', chg !== null && tgt === s.id);
       // pendant un changement, seules les deux voiles en jeu répondent (annuler / reprendre)
       b.disabled = p.finished !== null || (chg !== null && s.id !== p.sail && s.id !== chg);
-      const sp = chg === null ? pct(sailFactor(s.id, p.twa, p.tws)) : s.id === tgt ? (p.sailBack ? 'retour…' : 'envoi…') : s.id === p.sail || s.id === chg ? (p.sailBack ? 'reprendre' : 'annuler') : '—';
+      // vitesse estimée avec cette voile (au cap en cours de réglage s'il y en a un), et si le changement paie
+      const atwa = this.pending === null ? p.twa : norm180(p.twd - this.pending);
+      const sw = sailSwitch(p, s.id, atwa, p.tws);
+      let sv = '';
+      let tone = '';
+      if (chg === null) {
+        if (s.id === p.sail) {
+          sv = 'à poste';
+        } else if (sw.breakEven === null) {
+          sv = `${sw.vTo < sw.vNow - 0.05 ? '−' : '±'}${kn(Math.abs(sw.vTo - sw.vNow))} · plus lent`;
+          tone = 'bad';
+        } else {
+          const be = Math.round(sw.breakEven * 60);
+          sv = `+${kn(sw.vTo - sw.vNow)} · rentable en ${be >= 60 ? fmtDuration(be / 60) : `${Math.max(1, be)} min`}`;
+          tone = be <= 30 ? 'good' : be <= 120 ? 'mid' : 'bad';
+        }
+      }
+      const sp = chg === null ? `${kn(sw.vTo)} nds` : s.id === tgt ? (p.sailBack ? 'retour…' : 'envoi…') : s.id === p.sail || s.id === chg ? (p.sailBack ? 'reprendre' : 'annuler') : '—';
       q(r, `[data-sp="${s.id}"]`).textContent = sp;
+      const svEl = q(r, `[data-sv="${s.id}"]`);
+      svEl.textContent = sv;
+      svEl.className = `sv ${tone}`;
+      b.title = chg === null && s.id !== p.sail ? `${s.name} : ${kn(sw.vTo)} nds contre ${kn(sw.vNow)} avec le ${SAILS.find((x) => x.id === p.sail)!.name}. Le changement coûte environ ${(sw.lossNm * 1.852).toFixed(1).replace('.', ',')} km.` : `${s.name} : ${s.hint}`;
     }
     r.querySelectorAll<HTMLButtonElement>('[data-autosail]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.autosail === '1') === p.autoSail)));
     const nowEl = q(r, '[data-sx-now]');

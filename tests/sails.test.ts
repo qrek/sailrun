@@ -1,3 +1,4 @@
+import { BASE_PERF, sailSwitch } from '../src/sim/boat';
 import { describe, expect, it } from 'vitest';
 import { RACES } from '../src/data/races';
 import { DEFAULT_SETUP } from '../src/data/garage';
@@ -133,5 +134,18 @@ describe('ce qu’on voit des voiles en 3D', () => {
   it('une annulation repasse par les mêmes images, à l’envers', () => {
     const back = sailShow({ sail: 'foc', sailTo: 'spi', sailT: 8 * MIN, sailDur: 0.25 });
     expect(back).toEqual(at(8));
+  });
+});
+
+describe('rentabilité d’un changement de voile', () => {
+  it('au portant, passer du foc au spi va plus vite et se rattrape vite ; l’inverse est plus lent', () => {
+    const b = { sail: 'foc' as const, perf: { ...BASE_PERF, imoca: 1 }, energy: 80 };
+    const up = sailSwitch(b, 'spi', 150, 16);
+    expect(up.vTo).toBeGreaterThan(up.vNow);
+    expect(up.lossNm).toBeGreaterThan(0);
+    expect(up.breakEven).not.toBeNull();
+    expect(up.breakEven!).toBeLessThan(2);
+    const down = sailSwitch({ ...b, sail: 'spi' }, 'foc', 150, 16);
+    expect(down.breakEven).toBeNull();
   });
 });

@@ -163,6 +163,8 @@ export interface Boat {
   checkpoints?: LonLat[];
 }
 
+/** Nombre de points de route au plus : on prépare quelques bords, pas toute la course. */
+export const MAX_CP = 5;
 /** Rayon (milles) dans lequel un checkpoint est considéré comme atteint. */
 export const CP_RADIUS = 3;
 /** Angle au vent le plus serré que tient le pilote quand le checkpoint est face au vent. */
@@ -275,6 +277,25 @@ export function changeSail(b: Boat, sail: SailId): 'start' | 'cancel' | 'resume'
   b.energy = Math.max(0, b.energy - 3);
   b.sailLag = 0;
   return 'start';
+}
+
+/**
+ * Vaut-il le coup de changer de voile ? Vitesse avec chaque voile à cet angle, distance perdue pendant
+ * les 4 étapes du changement (malus et voile qui tire à chacune), et temps qu'il faut ensuite pour la rattraper.
+ */
+export function sailSwitch(b: Pick<Boat, 'sail' | 'perf' | 'energy'>, to: SailId, twa: number, tws: number): { vNow: number; vTo: number; lossNm: number; breakEven: number | null } {
+  const vNow = boatSpeed(twa, tws, b.perf, b.sail);
+  const vTo = boatSpeed(twa, tws, b.perf, to);
+  const dur = SAIL_CHANGE_HOURS * (b.energy < 25 ? 1.5 : 1);
+  let sailed = 0;
+  let start = 0;
+  for (const st of SAIL_STEPS) {
+    sailed += (st.end - start) * dur * (st.works === 'to' ? vTo : vNow) * st.f;
+    start = st.end;
+  }
+  const lossNm = vNow * dur - sailed;
+  const gain = vTo - vNow;
+  return { vNow, vTo, lossNm, breakEven: gain > 0.05 ? lossNm / gain : null };
 }
 
 /** Ce qui ralentit le bateau en ce moment, dans l'ordre d'affichage. */

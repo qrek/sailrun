@@ -6,14 +6,14 @@ import { WorldView } from './render/world';
 import { ImmersiveView } from './render/immersive';
 import { ChartView } from './render/chart';
 import { distUnit } from './ui/units';
-import { Boat, CP_RADIUS, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, targetSail, wakeUp } from './sim/boat';
+import { Boat, CP_RADIUS, MAX_CP, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, targetSail, wakeUp } from './sim/boat';
 import { LonLat, isLand, norm180, norm360, smooth } from './sim/geo';
 import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
 
 import { sunElevation } from './sim/sun';
 import { SyntheticWind, windFrom } from './sim/wind';
 import { GarageUI, loadSetup } from './ui/garageUI';
-import { CpRow, Hud, LayerId, ViewMode, cardinal } from './ui/hud';
+import { Hud, LayerId, ViewMode, cardinal } from './ui/hud';
 import { renderMenu } from './ui/menu';
 import { fmtDuration, raceClock } from './ui/dom';
 import { showFinish } from './ui/overlays';
@@ -29,6 +29,8 @@ const PROJ_HOURS = 72;
 /** ?dev dans l'adresse : accélération du temps pour tester. Sinon tout est en temps réel. */
 const DEV = new URLSearchParams(location.search).has('dev');
 const FC_MAX = 120;
+/** angle au vent sous lequel le trajet est dessiné « bords » (le pilote serre à 42°) */
+const CLOSE_SHOWN = 46;
 const sailName = (id: SailId) => SAILS.find((s) => s.id === id)?.name ?? id;
 
 function loadLayers(): Record<LayerId, boolean> {
@@ -76,8 +78,19 @@ export class Game {
   private pendingHdg: number | null = null;
   private probeMarine: MarineSeries | null | undefined = undefined;
   /** pose de checkpoints en cours, checkpoint sélectionné */
-  private placing = false;
   private cpSel = -1;
+  /** Barre (on navigue) ou Route (la carte sert à poser ses points) */
+  private mode: 'barre' | 'route' = 'barre';
+  /** le prochain point posé s'insère après celui-ci */
+  private insertAfter: number | null = null;
+  /** trajet simulé de la route : un point par demi-heure à partir de t0 */
+  private cpPath: { pts: LonLat[]; dt: number; t0: number } | null = null;
+  private cpEtas: (number | null)[] = [];
+  /** fenêtre 3D en bas à droite */
+  private pipOn = true;
+  private pipClock = 0;
+  private stripH = 48;
+  private pipDt = 0;
   private cpClock = 0;
 
   constructor(app: HTMLElement) {
@@ -92,8 +105,13 @@ export class Game {
     this.chart.setUnit(distUnit());
     this.chart.on('click', (ll) => {
       if (!ll || this.screen !== 'race' || this.immersiveOn) return;
-      if (this.placing) this.addCheckpoint(ll);
-      else this.setProbe(ll);
+      if (this.mode === 'route') {
+        // une bulle ouverte se ferme d'abord ; sinon chaque toucher pose un point
+        if (this.cpSel >= 0) {
+          this.cpSel = -1;
+          this.refreshCheckpoints();
+        } else this.addCheckpoint(ll);
+      } else this.setProbe(ll);
     });
     this.chart.on('mousemove', (_ll, x, y) => {
       this.pickAt = { x, y };
@@ -145,6 +163,7 @@ export class Game {
     this.immersiveOn = false;
     this.immersive.setActive(false);
     this.screen = 'menu';
+    this.syncPipStage();
     this.chart.setVisible(false);
     this.chart.setProbe(null);
     this.world.setLayerVisible(true);
@@ -179,6 +198,7 @@ export class Game {
 
   showGarage(def: RaceDef) {
     this.screen = 'garage';
+    this.syncPipStage();
     this.chart.setVisible(false);
     this.world.setLayerVisible(false);
     this.engine.input = this.garageView.input();
@@ -262,16 +282,23 @@ export class Game {
     // deux modes seulement : cap fixe ou Auto
     if (race.player.lock === 'twa') race.player.lock = 'hdg';
     if (race.player.auto && !race.player.checkpoints?.length) race.player.auto = false;
-    this.placing = false;
     this.cpSel = -1;
+    this.insertAfter = null;
     this.chart.onCpMove = (i, ll) => {
       const cps = race.player.checkpoints;
       if (!cps?.[i]) return;
+      if (isLand(ll[0], ll[1])) {
+        this.hud?.toast('Pose le point sur l’eau');
+        this.refreshCheckpoints();
+        return;
+      }
       cps[i] = ll;
       this.cpChanged();
     };
     this.chart.onCpTap = (i) => {
-      this.cpSel = i;
+      if (this.mode !== 'route') this.setMode('route');
+      this.insertAfter = null;
+      this.cpSel = this.cpSel === i ? -1 : i;
       this.refreshCheckpoints();
     };
     this.chart.onRingDrag = (h) => this.hud?.setPending(h);
@@ -368,25 +395,31 @@ export class Game {
           /* rien */
         }
       },
-      cpPlace: (on) => this.setPlacing(on),
+      setMode: (m) => this.setMode(m),
       cpDelete: (i) => {
         race.player.checkpoints?.splice(i, 1);
         this.cpSel = -1;
+        this.insertAfter = null;
         this.cpChanged();
+      },
+      cpInsertAfter: (i) => {
+        this.insertAfter = i;
+        this.cpSel = -1;
+        this.refreshCheckpoints();
       },
       cpClear: () => {
         race.player.checkpoints = [];
         this.cpSel = -1;
-        this.setPlacing(false);
+        this.insertAfter = null;
         this.cpChanged();
       },
-      cpFocus: (i) => {
-        const c = race.player.checkpoints?.[i];
-        if (!c) return;
-        this.cpSel = i;
-        this.chart.focus(c);
-        this.refreshCheckpoints();
+      scrub: (h) => {
+        this.fcOffset = Math.max(0, Math.min(this.stripH, h));
+        this.fcPlay = false;
+        this.fcDirty = true;
       },
+      pip: (open) => this.setPip(open),
+      pipFull: () => this.setView('immersive'),
       speed: (id) => {
         race.speed = id;
         this.paused = false;
@@ -421,6 +454,17 @@ export class Game {
     this.hud.setDev(DEV);
     this.syncControls();
     this.hud.update(race, this.day);
+    this.mode = 'barre';
+    this.hud.setMode('barre');
+    let pip = !this.engine.small;
+    try {
+      const v = localStorage.getItem('sailgame.pip');
+      if (v !== null) pip = v === '1';
+    } catch {
+      /* rien */
+    }
+    this.pipOn = pip;
+    this.hud.setPip(pip);
     this.refreshCheckpoints();
     this.syncRing();
   }
@@ -453,12 +497,13 @@ export class Game {
       if (m === 'reset' && p) this.chart.recenter(p.pos, 7);
     }
     this.syncControls();
+    this.syncPipStage();
   }
 
   /* ---------- cercle de cap, état du pilote ---------- */
   private syncRing() {
     const p = this.race?.player;
-    if (!p || p.finished !== null || this.immersiveOn) return this.chart.setRing(null);
+    if (!p || p.finished !== null || this.immersiveOn || this.mode === 'route') return this.chart.setRing(null);
     const change = p.sailTo === null ? null : { from: p.sail, to: p.sailTo, p: p.sailT / p.sailDur, back: p.sailBack };
     this.chart.setRing({ pos: p.pos, hdg: p.hdg, twd: p.twd, tws: p.tws, pending: this.pendingHdg, sail: p.sail, change });
   }
@@ -469,8 +514,8 @@ export class Game {
     if (!race || !p || !this.hud) return;
     const c = p.checkpoints?.[0];
     const txt = p.auto && c
-      ? `<b>Checkpoints</b> · point 1/${p.checkpoints!.length} à ${fmtDist(dist(p.pos, c), true)}`
-      : `<b>Cap fixe</b> · le bateau garde ${String(Math.round(p.hdg)).padStart(3, '0')}°${c ? '' : ' · pose des checkpoints pour le pilote'}`;
+      ? `<b>Suit ta route</b> · point 1/${p.checkpoints!.length} à ${fmtDist(dist(p.pos, c), true)}`
+      : `<b>Cap fixe</b> · le bateau garde ${String(Math.round(p.hdg)).padStart(3, '0')}°${c ? '' : ' · trace ta route dans l’onglet Route'}`;
     this.hud.setAutoInfo(txt);
   }
 
@@ -484,80 +529,195 @@ export class Game {
     return d.toDateString() === now.toDateString() ? hm : `${d.toLocaleDateString('fr-FR', { weekday: 'short' })} ${hm}`;
   }
 
-  private setPlacing(on: boolean) {
-    this.placing = on;
-    this.chart.setPlacing(on);
-    this.hud?.setPlacing(on, (this.race?.player.checkpoints?.length ?? 0) + 1);
+  /** Barre : on navigue (cadran, voiles). Route : la carte sert à poser ses points, la frise montre le temps. */
+  private setMode(m: 'barre' | 'route') {
+    this.mode = m;
+    this.chart.setPlacing(m === 'route');
+    this.hud?.setMode(m);
+    this.insertAfter = null;
+    this.cpSel = -1;
+    if (m === 'barre') {
+      this.fcOffset = 0;
+      this.fcPlay = false;
+      this.fcDirty = true;
+    }
+    if (this.immersiveOn && m === 'route') this.setView('3d');
+    this.syncRing();
+    this.refreshCheckpoints();
   }
 
-  /** Clic sur la carte en mode pose : nouveau checkpoint en fin de liste. */
+  /** Toucher sur la mer en mode Route : nouveau point en fin de route (ou inséré après le point choisi). */
   private addCheckpoint(ll: LonLat) {
     const p = this.race?.player;
     if (!p) return;
     if (isLand(ll[0], ll[1])) {
-      this.hud?.toast('Pose le checkpoint sur l’eau');
+      this.hud?.toast('Pose le point sur l’eau');
       return;
     }
-    (p.checkpoints ??= []).push(ll);
-    this.hud?.setPlacing(true, p.checkpoints.length + 1);
+    const cps = (p.checkpoints ??= []);
+    if (cps.length >= MAX_CP) {
+      this.hud?.toast(`${MAX_CP} points au maximum : déplace ou supprime un point`);
+      return;
+    }
+    if (this.insertAfter !== null) {
+      cps.splice(this.insertAfter + 1, 0, ll);
+      this.insertAfter = null;
+    } else cps.push(ll);
     this.cpChanged();
   }
 
   private cpChanged() {
     const p = this.race?.player;
     if (p && p.auto && !p.checkpoints?.length) this.setAuto(false, true);
+    if (p?.auto && p.checkpoints?.[0]) p.hdg = checkpointHeading(p.pos, p.checkpoints[0], p.twd);
     this.projClock = 0;
     this.refreshCheckpoints();
   }
 
-  /** Checkpoints : repères sur la carte, distances, caps et heures d'arrivée estimées. */
+  /** Position sur le trajet simulé de la route à l'heure t (null hors du trajet). */
+  private pathAt(t: number): LonLat | null {
+    const pp = this.cpPath;
+    if (!pp) return null;
+    const i = (t - pp.t0) / pp.dt;
+    if (i < 0 || i > pp.pts.length - 1) return null;
+    const a = pp.pts[Math.floor(i)];
+    const b = pp.pts[Math.min(pp.pts.length - 1, Math.floor(i) + 1)];
+    const k = i - Math.floor(i);
+    return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+  }
+
+  /**
+   * Route : on simule le pilote qui suit les points sur les prévisions, pour l'heure d'arrivée à chaque
+   * point et le trajet coloré selon la voile. Puis repères, bulle et barre de route.
+   */
   private refreshCheckpoints() {
     const race = this.race;
     if (!race || !this.hud) return;
     const p = race.player;
     const cps = p.checkpoints ?? [];
-    // heures d'arrivée : on simule le pilote qui suit les points, sur les prévisions
     const etas: (number | null)[] = cps.map(() => null);
+    this.cpPath = null;
+    const segs: { coords: LonLat[]; k: string }[] = [];
     if (cps.length && p.finished === null) {
       const sim: Boat = { ...p, auto: true, checkpoints: cps.slice() };
       let k = 0;
+      let done = Infinity;
       const steer = this.projSteer(sim)!;
-      projectBoat(sim, race.t, race.wind, 120, race.def.finish, race.def.finishR, (b, t) => {
-        while (k < cps.length && dist(b.pos, cps[k]) < CP_RADIUS) etas[k++] = t;
+      const pr = projectBoat(sim, race.t, race.wind, FC_MAX, race.def.finish, race.def.finishR, (b, t) => {
+        while (k < cps.length && dist(b.pos, cps[k]) < CP_RADIUS) {
+          etas[k++] = t;
+          if (k === cps.length) done = t;
+        }
         steer(b);
       }, race.def.marks);
+      // le trajet s'arrête au dernier point atteint
+      const n = Math.min(pr.pts.length, Number.isFinite(done) ? Math.ceil((done - race.t) / pr.dt) + 1 : pr.pts.length);
+      const pts = pr.pts.slice(0, n);
+      this.cpPath = { pts, dt: pr.dt, t0: race.t };
+      // segments colorés : voile portée, ou « up » quand on serre le vent (bords)
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const t = race.t + i * pr.dt;
+        const w = race.wind.at(pts[i][0], pts[i][1], t);
+        const twa = norm180(windFrom(w[0], w[1]) - bearing(pts[i], pts[i + 1]));
+        const kind = Math.abs(twa) < CLOSE_SHOWN ? 'up' : bestSail(twa, Math.hypot(w[0], w[1]));
+        const last = segs[segs.length - 1];
+        if (last && last.k === kind) last.coords.push(pts[i + 1]);
+        else segs.push({ coords: [pts[i], pts[i + 1]], k: kind });
+      }
     }
-    const pace = (a: number) => (a < 60 ? 'au près' : a < 110 ? 'vent de travers' : a < 150 ? 'au largue' : 'vent arrière');
-    let from = p.pos;
-    let total = 0;
-    const rows: CpRow[] = cps.map((c, i) => {
-      const d = dist(from, c);
-      total += d;
-      const hdg = bearing(from, c);
-      const t = etas[i] ?? (i ? etas[i - 1] : race.t) ?? race.t;
-      const w = race.wind.at(from[0], from[1], t);
-      const twa = Math.abs(norm180(windFrom(w[0], w[1]) - hdg));
-      from = c;
-      const eta = etas[i];
-      return {
-        dist: fmtDist(d, true),
-        hdg: Math.round(hdg),
-        eta: eta === null ? 'arrivée au-delà de 5 jours' : `arrivée ${this.localHM(eta)} · dans ${fmtDuration(eta - race.t)}`,
-        pace: `${pace(twa)} · ${sailName(bestSail(twa, Math.hypot(w[0], w[1])))}`,
-        upwind: twa < 42,
-        sel: i === this.cpSel,
-      };
-    });
+    this.cpEtas = etas;
+    this.chart.setRoutePath(segs);
     const lastEta = etas[etas.length - 1];
+    let total = 0;
+    let from = p.pos;
+    for (const c of cps) {
+      total += dist(from, c);
+      from = c;
+    }
     this.chart.setCheckpoints(p.finished === null ? p.pos : null, cps.map((c, i) => ({ pos: c, eta: etas[i] === null ? '' : this.localHM(etas[i]!), sel: i === this.cpSel })));
     this.hud.setEta(lastEta !== null && lastEta !== undefined ? lastEta - race.t : null);
-    this.hud.setCheckpoints({
-      rows,
+    // frise : on zoome sur la durée de la route (au moins 12 h, au plus les 5 jours de prévisions)
+    const H = lastEta !== null && lastEta !== undefined ? Math.min(FC_MAX, Math.max(12, Math.ceil((lastEta - race.t) * 1.25 + 2))) : 48;
+    this.stripH = H;
+    const every = H <= 24 ? 3 : H <= 72 ? 6 : 12;
+    const ticks: { at: number; label: string; day: boolean }[] = [];
+    const now = new Date(race.originUTC + race.t * 3600000);
+    const first = new Date(now);
+    first.setMinutes(0, 0, 0);
+    for (let k = 1; k <= H + 1; k++) {
+      const d = new Date(first.getTime() + k * 3600000);
+      const h = (d.getTime() - now.getTime()) / 3600000;
+      if (h > H) break;
+      if (d.getHours() === 0) ticks.push({ at: h / H, label: d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' }), day: true });
+      else if (d.getHours() % every === 0) ticks.push({ at: h / H, label: `${d.getHours()}h`, day: false });
+    }
+    this.hud.setRouteBar({
+      count: cps.length,
       total: fmtDist(total, true),
-      eta: lastEta === null || lastEta === undefined ? '—' : this.localHM(lastEta),
-      etaLabel: lastEta === null || lastEta === undefined ? 'au-delà des prévisions' : `au point ${cps.length} · dans ${fmtDuration(lastEta - race.t)}`,
+      arrival: lastEta === null || lastEta === undefined ? 'arrivée au-delà de 5 jours' : `arrivée au point ${cps.length} ${this.localHM(lastEta)} · dans ${fmtDuration(lastEta - race.t)}`,
       following: p.auto && cps.length > 0,
+      marks: etas.map((e) => (e === null ? 2 : (e - race.t) / H)),
+      ticks,
+      hours: H,
+      inserting: this.insertAfter,
     });
+    this.updateBubble();
+    this.fcDirty = true;
+  }
+
+  /** Bulle du point sélectionné, collée à son repère sur la carte. */
+  private updateBubble() {
+    const race = this.race;
+    if (!race || !this.hud) return;
+    const p = race.player;
+    const cps = p.checkpoints ?? [];
+    const i = this.cpSel;
+    if (this.mode !== 'route' || i < 0 || !cps[i]) return this.hud.showBubble(null);
+    const sc = this.chart.screenOf(cps[i]);
+    if (!sc) return this.hud.showBubble(null);
+    const from = i ? cps[i - 1] : p.pos;
+    const hdg = bearing(from, cps[i]);
+    const tFrom = i ? (this.cpEtas[i - 1] ?? race.t) : race.t;
+    const w = race.wind.at(from[0], from[1], tFrom);
+    const twa = Math.abs(norm180(windFrom(w[0], w[1]) - hdg));
+    const pace = twa < 60 ? 'au près' : twa < 110 ? 'vent de travers' : twa < 150 ? 'au largue' : 'vent arrière';
+    const eta = this.cpEtas[i];
+    this.hud.showBubble({
+      n: i,
+      x: sc[0],
+      y: sc[1],
+      eta: eta === null || eta === undefined ? 'au-delà de 5 j' : `${this.localHM(eta)} · dans ${fmtDuration(eta - race.t)}`,
+      dist: fmtDist(dist(from, cps[i]), true),
+      hdg: Math.round(hdg),
+      pace: `${pace} · ${sailName(bestSail(twa, Math.hypot(w[0], w[1])))}`,
+      upwind: twa < 42,
+    });
+  }
+
+  /* ---------- fenêtre 3D ---------- */
+  private setPip(open: boolean) {
+    this.pipOn = open;
+    try {
+      localStorage.setItem('sailgame.pip', open ? '1' : '0');
+    } catch {
+      /* rien */
+    }
+    this.hud?.setPip(open);
+    this.syncPipStage();
+  }
+
+  /** Le canvas 3D passe au-dessus de la carte, découpé à la taille de la fenêtre. */
+  private syncPipStage() {
+    const st = this.engine.canvas.parentElement!;
+    const rect = this.pipOn && this.screen === 'race' && !this.immersiveOn ? this.hud?.pipRect() : null;
+    st.classList.toggle('pip', !!rect);
+    if (!rect) {
+      st.style.clipPath = '';
+      return;
+    }
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    st.style.clipPath = `inset(${rect.top}px ${W - rect.right}px ${H - rect.bottom}px ${rect.left}px round 14px)`;
   }
 
   /* ---------- commandes ---------- */
@@ -706,9 +866,10 @@ export class Game {
 
     // prévisions : décalage dans le temps de la carte (vent, nuages, bateau fantôme)
     if (this.fcPlay) {
-      this.fcOffset += dt * 10;
-      if (this.fcOffset >= FC_MAX) {
-        this.fcOffset = FC_MAX;
+      const end = this.mode === 'route' ? this.stripH : FC_MAX;
+      this.fcOffset += dt * (end / 12);
+      if (this.fcOffset >= end) {
+        this.fcOffset = end;
         this.fcPlay = false;
       }
       this.fcDirty = true;
@@ -718,7 +879,7 @@ export class Game {
     this.projClock -= dt;
     if (this.projClock <= 0) {
       this.projClock = this.pendingHdg !== null ? 0.4 : 3;
-      if (p.finished === null) {
+      if (p.finished === null && this.mode !== 'route') {
         let src = p;
         if (this.pendingHdg !== null) {
           // aperçu : le bateau avec la nouvelle consigne, sans la valider
@@ -766,6 +927,21 @@ export class Game {
       this.immersive.frame(dt, p, race.boats, this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180);
     } else {
       this.chart.frame({ wind: race.wind, windT, focus: p.pos }, dt);
+      if (this.cpSel >= 0 && this.mode === 'route') this.updateBubble();
+      // fenêtre 3D : rendu réduit, une quinzaine d'images par seconde
+      this.pipDt += dt;
+      this.pipClock -= dt;
+      if (this.pipOn && this.pipClock <= 0) {
+        this.pipClock = this.engine.small ? 1 / 12 : 1 / 20;
+        this.syncPipStage();
+        const rc = this.hud?.pipRect();
+        if (rc) {
+          const hours = ((race.originUTC + race.t * 3600000) / 3600000) % 24;
+          const hourAngle = (hours + p.pos[0] / 15 - 12) * 15;
+          this.immersive.frame(this.pipDt, p, race.boats, this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180, { x: rc.left, y: rc.top, w: rc.width, h: rc.height });
+        }
+        this.pipDt = 0;
+      }
     }
   }
 
@@ -781,6 +957,20 @@ export class Game {
 
   private updateForecastUI(race: Race) {
     const h = this.fcOffset;
+    if (this.mode === 'route') {
+      // frise de la route : heure, et vent là où sera le bateau fantôme sur ta route
+      const t = race.t + h;
+      const g = h >= 0.25 ? this.pathAt(t) : null;
+      this.chart.setGhostPos(g);
+      const when = h < 0.25 ? 'Maintenant' : `${this.localHM(t)} <small>+${h < 10 ? h.toFixed(1).replace('.', ',') : Math.round(h)} h</small>`;
+      let wind = '';
+      if (g) {
+        const w = race.wind.at(g[0], g[1], t);
+        wind = `<em>ton bateau : ${Math.round(Math.hypot(w[0], w[1]))} nds de ${cardinal(windFrom(w[0], w[1]))}</em>`;
+      } else if (h >= 0.25 && this.cpPath) wind = '<em>route terminée</em>';
+      this.hud?.setStrip(h, this.stripH, `<b>${when}</b>${wind}`, this.fcPlay);
+      return;
+    }
     if (h < 0.5) {
       this.chart.setGhost(0);
       this.hud?.setForecast(0, this.fcPlay, 'Prévisions', 'Glisse pour voir le vent des 5 prochains jours');

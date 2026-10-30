@@ -448,6 +448,9 @@ export class ImmersiveView {
   }
 
   /** Affiche ou masque les étiquettes des concurrents (vue active ou non). */
+  /** cap affiché (lissé), null avant la première image */
+  private vHdg: number | null = null;
+
   setActive(on: boolean) {
     this.labels.hidden = !on;
   }
@@ -572,8 +575,21 @@ export class ImmersiveView {
     }
   }
 
-  frame(dt: number, me: Boat, boats: Boat[], day: number, sunAz: number) {
+  /**
+   * Une image de la vue au ras de l'eau. `vp` (pixels CSS, origine en haut à gauche) : rendu réduit dans
+   * ce rectangle seulement, sans post-traitement — c'est la fenêtre 3D posée sur la carte.
+   */
+  frame(dt: number, real: Boat, boats: Boat[], day: number, sunAz: number, vp?: { x: number; y: number; w: number; h: number }) {
     this.time += dt;
+    // le cap affiché rejoint le vrai cap en douceur : la mer, le vent, les voiles et les concurrents
+    // tournent autour du bateau au lieu de sauter d'un coup quand on change de cap
+    if (this.vHdg === null || dt > 1) this.vHdg = real.hdg;
+    const dh = ((real.hdg - this.vHdg + 540) % 360) - 180;
+    const step = Math.sign(dh) * Math.min(Math.abs(dh), Math.max(Math.abs(dh) * Math.min(1, dt * 2.2), 6 * dt));
+    this.vHdg = (this.vHdg + step + 360) % 360;
+    const vTwa = ((real.twd - this.vHdg + 540) % 360) - 180;
+    const me: Boat = { ...real, hdg: this.vHdg, twa: Math.abs(dh) < 0.05 ? real.twa : vTwa };
+    sunAz += (real.hdg - this.vHdg) * D2R;
     this.setPlayer(me);
     const rig = this.rig!;
     // vent dans le repère du bateau (d'où il vient)
@@ -643,7 +659,22 @@ export class ImmersiveView {
     r.shadowMap.enabled = false;
     this.bloom.strength = 0.08 + 0.12 * day; // juste l’éclat du soleil sur l’eau, pas de halo général
     this.lens.uniforms.uTime.value = T;
-    this.composer.render(dt);
+    if (!vp) {
+      this.composer.render(dt);
+      return;
+    }
+    const H = this.engine.h;
+    cam.aspect = vp.w / vp.h;
+    cam.updateProjectionMatrix();
+    r.setScissorTest(true);
+    r.setViewport(vp.x, H - vp.y - vp.h, vp.w, vp.h);
+    r.setScissor(vp.x, H - vp.y - vp.h, vp.w, vp.h);
+    r.setRenderTarget(null);
+    r.render(this.scene, cam);
+    r.setScissorTest(false);
+    r.setViewport(0, 0, this.engine.w, H);
+    cam.aspect = this.engine.w / H;
+    cam.updateProjectionMatrix();
   }
 
   private updateSpray(dt: number, me: Boat) {

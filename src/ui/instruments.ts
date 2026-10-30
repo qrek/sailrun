@@ -183,46 +183,49 @@ export const SAIL_ART: Record<string, string> = {
   spi: '<path d="M18 52 C 0 40, 2 10, 26 5 C 50 8, 50 40, 34 52 Z" class="s"/><path d="M4 56 L 52 56" class="d"/><path d="M46 4 L 46 56" class="m"/>',
 };
 
-/* ---------- pilote : cadran « tête en haut » avec consigne à faire glisser ---------- */
+/* ---------- pilote : cadran « nord en haut », comme la carte ---------- */
 
 /**
- * Cadran du pilote. La rose tourne (cap en haut), le bateau reste fixe au centre.
- * Le vent, la zone face au vent, les secteurs de près, la route conseillée, la consigne (losange
- * turquoise) et la consigne en cours de réglage (losange en pointillés) tournent autour.
+ * Cadran du pilote, orienté comme la carte (nord en haut) : le bateau tourne au centre, comme son icône
+ * sur la carte. Autour : la couronne des voiles (la meilleure voile pour chaque cap, en couleur, et la zone
+ * face au vent en rouge), la flèche du vent, la consigne et la consigne en cours de réglage. Au centre :
+ * la vitesse, le cap et l'angle au vent.
  */
 export function pilotDial(): string {
   let rose = '';
   for (let d = 0; d < 360; d += 5) {
     const major = d % 30 === 0;
     const mid = d % 10 === 0;
-    const [x0, y0] = P(d, major ? 76 : mid ? 80 : 82.5);
-    const [x1, y1] = P(d, 86);
+    const [x0, y0] = P(d, major ? 79 : mid ? 82 : 84);
+    const [x1, y1] = P(d, 87);
     rose += `<line x1="${f(x0)}" y1="${f(y0)}" x2="${f(x1)}" y2="${f(y1)}" class="${major ? 'tk M' : mid ? 'tk m' : 'tk'}"/>`;
   }
   const lab: Record<number, string> = { 0: 'N', 90: 'E', 180: 'S', 270: 'O' };
-  for (let d = 0; d < 360; d += 30) {
-    const [x, y] = P(d, 67);
-    const txt = lab[d] ?? String(d);
-    rose += `<text x="${f(x)}" y="${f(y + 3.5)}" transform="rotate(${d} ${f(x)} ${f(y)})" class="${lab[d] ? 'cl C' : 'cl'}">${txt}</text>`;
+  for (const d of [0, 90, 180, 270]) {
+    const [x, y] = P(d, 71);
+    rose += `<text x="${f(x)}" y="${f(y + 4)}" class="cl C">${lab[d]}</text>`;
   }
-  const hull = '<path d="M0,-30 C8.5,-19 10.5,-5 10,12 L9,24 L-9,24 L-10,12 C-10.5,-5 -8.5,-19 0,-30 Z" class="hull"/><path d="M0,-30 L0,24" class="keel"/><line x1="0" y1="-10" x2="0" y2="20" class="boom" data-pd-boom/><circle cy="-10" r="2.4" class="mast"/>';
+  // bateau vu du dessus, étrave en haut avant rotation ; la voile d'avant prend la couleur de la voile portée
+  const boat = '<g data-pd-boat><path d="M0,-24 C7,-15 8.5,-4 8,9 L7,19 L-7,19 L-8,9 C-8.5,-4 -7,-15 0,-24 Z" class="hull"/><path d="M0,-21 L0,-8" class="fore" data-pd-jib/><line x1="0" y1="-6" x2="0" y2="16" class="boom" data-pd-boom/><circle cy="-6" r="2" class="mast"/></g>';
   return `
-    <svg class="pdial" viewBox="-100 -100 200 200" data-pdial role="slider" tabindex="0" aria-label="Pilote : glisse sur le cadran pour choisir un nouveau cap">
+    <svg class="pdial nu" viewBox="-100 -100 200 200" data-pdial role="slider" tabindex="0" aria-label="Pilote : glisse sur le cadran pour choisir un nouveau cap">
       <circle r="98" class="bezel"/>
       <circle r="88" class="face"/>
+      <g data-pd-sails></g>
       <g data-pd-rose>${rose}</g>
-      <g data-pd-nogo><path d="${arc(-40, 40, 58)}" class="nogo"/></g>
-      <g data-pd-sectors><path d="${arc(-60, -40, 58)}" class="port"/><path d="${arc(40, 60, 58)}" class="stbd"/></g>
-      <circle r="52" class="inner"/>
+      <circle r="54" class="inner"/>
       <g data-pd-wp><path d="M0,-88 L-4.5,-81 L0,-77 L4.5,-81 Z" class="wp"/></g>
-      <g data-pd-wind><path d="M0,-50 L0,-36" class="wshaft"/><path d="M-6,-43 L0,-34 L6,-43" class="whead"/><text y="-55" class="wl">VENT</text></g>
-      <g data-pd-proj><line x1="0" y1="-36" x2="0" y2="-88" class="pline"/></g>
+      <g data-pd-proj><line x1="0" y1="-26" x2="0" y2="-86" class="pline"/></g>
+      <g data-pd-cur><line x1="0" y1="-26" x2="0" y2="-54" class="cline"/></g>
       <g data-pd-cons><path d="M0,-99 L-7,-88 L0,-80 L7,-88 Z" class="cons"/></g>
       <g data-pd-pend><path d="M0,-99 L-7,-88 L0,-80 L7,-88 Z" class="pend"/></g>
-      ${hull}
-      <path d="M0,-89 L-5,-97 L5,-97 Z" class="lubber"/>
-      <text y="44" class="hdg" data-pd-hdg>000°</text>
-      <text y="56" class="twa" data-pd-twa>0°</text>
+      <g data-pd-wind><path d="M0,-99 L0,-62" class="wshaft"/><path d="M-7,-71 L0,-60 L7,-71" class="whead"/></g>
+      <text class="wtxt" data-pd-wtxt></text>
+      ${boat}
+      <text y="-30" class="spd" data-pd-spd>0,0</text>
+      <text y="-21" class="spu">nds</text>
+      <text y="34" class="hdg" data-pd-hdg>000°</text>
+      <text y="45" class="twa" data-pd-twa>0°</text>
     </svg>`;
 }
 
@@ -230,12 +233,21 @@ export interface PilotView {
   hdg: number;
   twd: number;
   twa: number;
-  /** consigne active (cap) ou null en mode route */
+  tws: number;
+  spd: number;
+  /** voile portée (couleur de la voile d'avant sur le bateau) */
+  sailColor: string;
+  /** meilleure voile pour un angle au vent donné, et la couleur de chaque voile */
+  best: (twa: number) => string;
+  colors: Record<string, string>;
+  /** consigne active (cap) ou null */
   cons: number | null;
   /** consigne en cours de réglage (cap), ou null */
   pending: number | null;
   wp: number | null;
 }
+
+const sailKeys = new WeakMap<Element, string>();
 
 export function setPilotDial(root: ParentNode, v: PilotView) {
   const q = (s: string) => root.querySelector(s) as SVGGElement | null;
@@ -245,25 +257,65 @@ export function setPilotDial(root: ParentNode, v: PilotView) {
     g.style.display = a === null ? 'none' : '';
     if (a !== null) g.setAttribute('transform', `rotate(${a.toFixed(1)})`);
   };
-  const rel = (a: number) => ((a - v.hdg + 540) % 360) - 180;
-  rot('[data-pd-rose]', -v.hdg);
-  rot('[data-pd-wind]', rel(v.twd));
-  rot('[data-pd-nogo]', rel(v.twd));
-  rot('[data-pd-sectors]', rel(v.twd));
-  rot('[data-pd-wp]', v.wp === null ? null : rel(v.wp));
-  rot('[data-pd-cons]', v.cons === null ? null : rel(v.cons));
-  rot('[data-pd-pend]', v.pending === null ? null : rel(v.pending));
-  rot('[data-pd-proj]', v.pending === null ? null : rel(v.pending));
+  rot('[data-pd-boat]', v.hdg);
+  rot('[data-pd-cur]', v.pending === null ? v.hdg : null);
+  rot('[data-pd-wind]', v.twd);
+  rot('[data-pd-wp]', v.wp);
+  rot('[data-pd-cons]', v.cons);
+  rot('[data-pd-pend]', v.pending);
+  rot('[data-pd-proj]', v.pending);
+  // couronne des voiles : pour chaque cap, la voile qui va le mieux ; en rouge, là où on ne remonte pas
+  const sg = q('[data-pd-sails]');
+  if (sg) {
+    const key = `${Math.round(v.twd / 2)}.${Math.round(v.tws)}`;
+    if (sailKeys.get(sg) !== key) {
+      sailKeys.set(sg, key);
+      let out = '';
+      let start = 0;
+      let prev = '';
+      const kind = (h: number) => {
+        const twa = ((v.twd - h + 540) % 360) - 180;
+        return Math.abs(twa) < 38 ? 'nogo' : v.best(twa);
+      };
+      for (let a = 0; a <= 360; a += 3) {
+        const k = a === 360 ? '' : kind(a);
+        if (k !== prev) {
+          if (prev) out += `<path d="${arc(start, a, 62)}" class="${prev === 'nogo' ? 'ngs' : 'ss'}" style="stroke: ${prev === 'nogo' ? '' : v.colors[prev]}"/>`;
+          start = a;
+          prev = k;
+        }
+      }
+      sg.innerHTML = out;
+    }
+  }
+  const wt = q('[data-pd-wtxt]');
+  if (wt) {
+    const [x, y] = P(v.twd, 56);
+    wt.setAttribute('x', f(x));
+    wt.setAttribute('y', f(y + 3));
+    wt.textContent = `${Math.round(v.tws)}`;
+  }
+  const sp = root.querySelector('[data-pd-spd]');
+  if (sp) sp.textContent = v.spd.toFixed(1).replace('.', ',');
   const h = root.querySelector('[data-pd-hdg]');
-  if (h) h.textContent = `${String(Math.round(((v.hdg % 360) + 360) % 360)).padStart(3, '0')}°`;
+  if (h) h.textContent = `${String(Math.round((((v.pending ?? v.hdg) % 360) + 360) % 360)).padStart(3, '0')}°`;
   const t = root.querySelector('[data-pd-twa]');
   if (t) {
     const a = Math.round(Math.abs(v.twa));
-    t.textContent = `TWA ${a}° ${v.twa < 0 ? 'BÂB' : 'TRI'}`;
+    const pace = a < 38 ? 'FACE AU VENT' : a < 60 ? 'AU PRÈS' : a < 110 ? 'TRAVERS' : a < 150 ? 'LARGUE' : 'ARRIÈRE';
+    t.textContent = `${a}° ${v.twa < 0 ? 'BÂB' : 'TRI'} · ${pace}`;
     t.setAttribute('class', `twa ${a < 38 ? 'bad' : v.twa < 0 ? 'p' : 's'}`);
   }
+  // la bôme et la voile d'avant passent sous le vent
+  const side = -Math.sign(v.twa || 1);
   const boom = root.querySelector('[data-pd-boom]');
-  if (boom) boom.setAttribute('transform', `rotate(${(-Math.sign(v.twa) * Math.min(80, Math.abs(v.twa) * 0.5)).toFixed(1)} 0 -10)`);
+  if (boom) boom.setAttribute('transform', `rotate(${(side * Math.min(80, Math.abs(v.twa) * 0.5)).toFixed(1)} 0 -6)`);
+  const jib = root.querySelector('[data-pd-jib]') as SVGPathElement | null;
+  if (jib) {
+    const k = side * Math.min(9, 2 + Math.abs(v.twa) * 0.06);
+    jib.setAttribute('d', `M0,-21 Q${f(k * 1.6)},-14 ${f(k)},-6`);
+    jib.style.stroke = v.sailColor;
+  }
 }
 
 /** Angle (°, 0 = haut, sens horaire) du pointeur par rapport au centre du cadran. */
