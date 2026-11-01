@@ -8,6 +8,7 @@ import { windFrom } from '../sim/wind';
 import { ICON, esc, fmtDuration, q, raceClock } from './dom';
 import { SAIL_ART, crossoverSvg, dialAngle, pilotDial, setPilotDial } from './instruments';
 import { DistUnit, distUnit, fmtDist, setDistUnit, toUnit, unitLabel } from './units';
+import { Quality, loadQuality } from '../render/quality';
 
 export type LayerId = 'wind' | 'clouds';
 export type ViewMode = '2d' | '3d' | 'reset' | 'immersive';
@@ -40,6 +41,8 @@ export interface HudHandlers {
   lock(mode: 'hdg' | 'twa'): void;
   forecast(hours: number): void;
   units(u: DistUnit): void;
+  /** qualité graphique (enregistrée) */
+  quality(q: Quality): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
   /** Barre (on navigue) ou Route (on pose ses points sur la carte) */
@@ -249,6 +252,9 @@ export class Hud {
         <div class="set-row"><span>Distances</span><div class="seg mini" role="group" aria-label="Unité des distances">
           <button type="button" data-unit="km" aria-pressed="${distUnit() === 'km'}">km</button>
           <button type="button" data-unit="nm" aria-pressed="${distUnit() === 'nm'}">milles</button>
+        </div></div>
+        <div class="set-row"><span>Qualité 3D</span><div class="seg mini" role="group" aria-label="Qualité graphique : moins elle est haute, moins l’ordinateur chauffe">
+          ${(['haute', 'moyenne', 'eco'] as Quality[]).map((k) => `<button type="button" data-quality="${k}" aria-pressed="${loadQuality() === k}">${k === 'eco' ? 'Éco' : k === 'haute' ? 'Haute' : 'Moyenne'}</button>`).join('')}
         </div></div>
         <div class="set-row"><span>Vent sur la carte</span><div class="seg mini" role="group" aria-label="Vent sur la carte">
           <button type="button" data-layer="wind" aria-pressed="${layers.wind}">Traits</button>
@@ -471,6 +477,13 @@ export class Hud {
         setDistUnit(u);
         r.querySelectorAll<HTMLButtonElement>('[data-unit]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.unit === u)));
         this.h.units(u);
+      }),
+    );
+    r.querySelectorAll<HTMLButtonElement>('[data-quality]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const k = b.dataset.quality as Quality;
+        r.querySelectorAll<HTMLButtonElement>('[data-quality]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.quality === k)));
+        this.h.quality(k);
       }),
     );
     // barre d'outils et panneaux

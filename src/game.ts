@@ -22,6 +22,7 @@ import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
 import { bearing, dist } from './sim/geo';
 import { fmtDist } from './ui/units';
 import { enableModelDrop, preloadBoatModel } from './render/glbBoat';
+import { FrameGate, Quality, loadQuality, qualitySettings, saveQuality } from './render/quality';
 
 type Screen = 'menu' | 'garage' | 'race';
 const LAYERS_KEY = 'sailgame.layers.v1';
@@ -89,6 +90,10 @@ export class Game {
   /** fenêtre 3D en bas à droite */
   private pipOn = true;
   private pipClock = 0;
+  /** cadence de la fenêtre 3D (images par seconde), selon la qualité graphique */
+  private pipFps = 15;
+  /** jamais plus d'images par seconde que la qualité graphique n'en demande */
+  private gate = new FrameGate(60);
   private stripH = 48;
   private pipDt = 0;
   private cpClock = 0;
@@ -102,6 +107,7 @@ export class Game {
     if (DEV) (window as unknown as { __garage: GarageView }).__garage = this.garageView;
     this.immersive = new ImmersiveView(this.engine, app);
     this.chart = new ChartView(app);
+    this.applyQuality(loadQuality());
     this.chart.setUnit(distUnit());
     this.chart.on('click', (ll) => {
       if (!ll || this.screen !== 'race' || this.immersiveOn) return;
@@ -378,6 +384,10 @@ export class Game {
         this.fcOffset = Math.max(0, Math.min(FC_MAX, h));
         this.fcPlay = false;
         this.fcDirty = true;
+      },
+      quality: (q) => {
+        saveQuality(q);
+        this.applyQuality(q);
       },
       units: (u) => {
         this.chart.setUnit(u);
@@ -822,7 +832,22 @@ export class Game {
   }
 
   /* ---------- boucle ---------- */
+  /** Qualité graphique : densité de la 3D, cadence, halo, finesse de la mer, traits de vent. */
+  private applyQuality(q: Quality) {
+    const s = qualitySettings(q, window.devicePixelRatio || 1, this.engine.small);
+    this.gate.fps = s.fps;
+    this.pipFps = s.pipFps;
+    this.engine.setPixelRatio(s.pixelRatio);
+    this.immersive.setQuality(s);
+    this.chart.setQuality(s);
+  }
+
   private loop(now: number) {
+    // écran 120 Hz : une image sur deux suffit (le temps écoulé est compté depuis la dernière image dessinée)
+    if (!this.gate.ready(now)) {
+      requestAnimationFrame((t) => this.loop(t));
+      return;
+    }
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
     this.clock += dt;
@@ -936,7 +961,7 @@ export class Game {
       this.pipDt += dt;
       this.pipClock -= dt;
       if (this.pipOn && this.pipClock <= 0) {
-        this.pipClock = this.engine.small ? 1 / 12 : 1 / 20;
+        this.pipClock = 1 / this.pipFps;
         this.syncPipStage();
         const rc = this.hud?.pipRect();
         if (rc) {

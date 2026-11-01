@@ -4,6 +4,7 @@ import { Hull } from './buoyancy';
 import { Spray } from './spray';
 import { sailAir } from './sailAir';
 import { Kind, Wildlife } from './wildlife';
+import type { QualitySettings } from './quality';
 import { D2R, NM_PER_DEG } from '../sim/geo';
 import { BoatRig, boatModelVersion, buildBoat, disposeBoat, showSails, trimBoat } from './boatModel';
 import { Engine, InputHandler } from './engine';
@@ -626,6 +627,16 @@ export class ImmersiveView {
   }
 
   /** Remet la caméra derrière le bateau. */
+  /** Qualité graphique : halo du soleil, finesse de la mer. */
+  setQuality(s: QualitySettings) {
+    this.bloom.enabled = s.bloom;
+    const m = this.sea.material as THREE.ShaderMaterial;
+    if (m.defines.ND !== s.ripples) {
+      m.defines = { ND: s.ripples };
+      m.needsUpdate = true;
+    }
+  }
+
   /** Fait venir des dauphins ou une baleine tout de suite (mode test). */
   meet(kind: Kind) {
     this.wildlife.trigger(kind);

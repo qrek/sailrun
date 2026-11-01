@@ -35,6 +35,12 @@ export class Engine {
     f(this.w, this.h);
   }
 
+  /** Densité de pixels du rendu 3D (réglage de qualité) ; l'interface HTML n'en dépend pas. */
+  setPixelRatio(pr: number) {
+    this.renderer.setPixelRatio(pr);
+    this.resize();
+  }
+
   resize() {
     this.w = Math.max(1, this.host.clientWidth);
     this.h = Math.max(1, this.host.clientHeight);

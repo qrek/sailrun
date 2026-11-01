@@ -176,6 +176,9 @@ export class ChartView {
   private ready = false;
   private boats: Boat[] = [];
   private particles: { lon: number; lat: number; age: number; life: number }[] = [];
+  /** qualité graphique : densité de pixels des traits de vent, et part des traits dessinés */
+  private windRatio = 2;
+  private windShare = 1;
   private moving = false;
   private scale: maplibregl.ScaleControl;
   windLayer = true;
@@ -485,9 +488,17 @@ export class ChartView {
   private fWindT = NaN;
   private readonly CELL = 28;
 
+  /** Qualité graphique : traits de vent moins fins et moins nombreux en mode économie. */
+  setQuality(s: { windRatio: number; windParticles: number }) {
+    if (s.windRatio === this.windRatio && s.windParticles === this.windShare) return;
+    this.windRatio = s.windRatio;
+    this.windShare = s.windParticles;
+    this.sizeCanvas();
+  }
+
   private sizeCanvas() {
     const r = this.el.getBoundingClientRect();
-    const dpr = Math.min(LITE ? 1.5 : 2, window.devicePixelRatio || 1);
+    const dpr = Math.min(LITE ? 1.5 : 2, window.devicePixelRatio || 1, this.windRatio);
     this.canvas.width = Math.max(1, Math.round(r.width * dpr));
     this.canvas.height = Math.max(1, Math.round(r.height * dpr));
     this.canvas.style.width = `${r.width}px`;
@@ -564,7 +575,7 @@ export class ChartView {
     const cols = this.fCols;
     const C = this.CELL;
     const area = this.el.clientWidth * this.el.clientHeight;
-    const n = Math.round(LITE ? Math.min(550, area / 1700) : Math.min(1400, area / 1000));
+    const n = Math.round((LITE ? Math.min(550, area / 1700) : Math.min(1400, area / 1000)) * this.windShare);
     while (this.particles.length < n) this.particles.push(this.spawn());
     if (this.particles.length > n) this.particles.length = n;
     const step = Math.min(2, dt * 60);
