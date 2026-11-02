@@ -127,10 +127,14 @@ Le bateau est codé (`src/render/boatModel.ts`), mais un modèle fait sous Blend
 
 ## Positions en direct
 
-Le jeu sait recaler les concurrents sur leurs positions officielles (`src/sim/live.ts`) : il attend un JSON
-`{ "at": ms, "positions": [{ "who": "Jérémie Beyou", "lat": 47.1, "lon": -6.2, "cog": 230, "sog": 18, "ts": ms }] }`
-à l'adresse donnée par `VITE_LIVE_URL`. La cartographie officielle n'est en ligne qu'au départ : le petit relais
-qui la lit et produit ce JSON reste à écrire à ce moment-là. Sans relais, les concurrents sont simulés.
+Sur la Route du Rhum, les IMOCA du jeu sont recalés toutes les 5 minutes sur leurs positions officielles : tous les
+joueurs voient donc la même course. Le relais `api/official` (fonction Vercel) lit la cartographie de la course
+(carto.routedurhum.com, fichiers `.hwx` décodés par `src/net/official.ts`) et sert le dernier pointage en JSON,
+mis en cache 10 minutes : la cartographie n'est interrogée que deux fois par période, quel que soit le nombre de
+joueurs. En développement, Vite sert le même relais. Chaque position est avancée jusqu'à l'heure présente à son cap
+et à sa vitesse ; entre deux pointages, la simulation fait avancer les bateaux dans le vent réel. Un pointage complet
+fait aussi la liste des engagés : un abandon ou un non-partant quitte la course, un engagé absent la rejoint.
+Relais injoignable : les concurrents restent simulés, comme avant. `VITE_LIVE_URL` remplace l'adresse du relais.
 
 ## Prochaines étapes
 

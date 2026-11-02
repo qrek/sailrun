@@ -1,6 +1,6 @@
 import { RaceDef, raceById } from '../data/races';
 import { Setup, botSetup, calibrated, isLightColor, lookOf, perfOf, styleOf } from '../data/garage';
-import { genPerf, shortName } from '../data/fleet';
+import { FleetEntry, genPerf, shortName } from '../data/fleet';
 import { Boat, BoatEvent, CP_RADIUS, SAIL_CHANGE_HOURS, bestSail, checkpointHeading, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
 import { LonLat, Rng, dist } from './geo';
 import { bestHeading, decideEvery, nextTarget } from './router';
@@ -228,31 +228,49 @@ export class Race {
       hdg: d.startHeading,
       auto: true,
     });
-    const bots = fleet.map((f, i) => {
-      const perf = genPerf(f.gen);
-      perf.speed *= 0.975 + 0.025 * f.skill;
-      const r = this.rng.next();
-      const pick = r < f.skill * f.skill ? 0 : r < 0.85 ? 1 + Math.floor(this.rng.next() * 2) : 3 + Math.floor(this.rng.next() * 2);
-      const routeIdx = order[Math.min(order.length - 1, pick)];
-      return makeBoat({
-        id: f.id,
-        fleetId: f.id,
-        name: shortName(f.skipper),
-        color: f.color,
-        dark: f.dark,
-        perf,
-        hull: 'classique',
-        foils: f.gen === 'dagger' ? 'derives' : f.gen === 'new' ? 'grands' : 'c',
-        mast: 'aile',
-        route: d.routes[routeIdx],
-        pos: slot(i >= Math.floor(n / 2) ? i + 1 : i),
-        hdg: d.startHeading,
-        jitter: 2 + (1 - f.skill) * 14,
-        sailLagMax: 0.15 + (1 - f.skill) * 1.1,
-        talk: 1e9,
-      });
-    });
+    const bots = fleet.map((f, i) => this.fleetBoat(f, slot(i >= Math.floor(n / 2) ? i + 1 : i), d.startHeading));
     return [player, ...bots];
+  }
+
+  /** Le bot d'un skipper engagé : bateau de sa génération, route choisie selon son niveau. */
+  private fleetBoat(f: FleetEntry, pos: LonLat, hdg: number): Boat {
+    const d = this.def;
+    const order = this.routeOrder.length ? this.routeOrder : d.routes.map((_, i) => i);
+    const perf = genPerf(f.gen);
+    perf.speed *= 0.975 + 0.025 * f.skill;
+    const r = this.rng.next();
+    const pick = r < f.skill * f.skill ? 0 : r < 0.85 ? 1 + Math.floor(this.rng.next() * 2) : 3 + Math.floor(this.rng.next() * 2);
+    return makeBoat({
+      id: f.id,
+      fleetId: f.id,
+      name: shortName(f.skipper),
+      color: f.color,
+      dark: f.dark,
+      perf,
+      hull: 'classique',
+      foils: f.gen === 'dagger' ? 'derives' : f.gen === 'new' ? 'grands' : 'c',
+      mast: 'aile',
+      route: d.routes[order[Math.min(order.length - 1, pick)]],
+      pos,
+      hdg,
+      jitter: 2 + (1 - f.skill) * 14,
+      sailLagMax: 0.15 + (1 - f.skill) * 1.1,
+      talk: 1e9,
+    });
+  }
+
+  /** Un engagé rejoint la course (positions officielles) : il part de la ligne, le recalage le place. */
+  addFleetBoat(f: FleetEntry): Boat {
+    const b = this.fleetBoat(f, [...this.def.start] as LonLat, this.def.startHeading);
+    // sur place : la carte garde une référence à cette liste
+    this.boats.push(b);
+    return b;
+  }
+
+  /** Un concurrent quitte la course (abandon, non-partant). Jamais le joueur. */
+  removeBoat(b: Boat): void {
+    const i = this.boats.indexOf(b);
+    if (i >= 0 && !b.isPlayer) this.boats.splice(i, 1);
   }
 
   /** Options de route de la plus rapide à la plus lente (vraie flotte). */

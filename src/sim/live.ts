@@ -1,10 +1,11 @@
 import { IMOCA_RHUM_2026 } from '../data/fleet';
+import { dist, move, norm360 } from './geo';
 import type { Race } from './race';
 
 /**
- * Positions officielles en direct. La source (cartographie de la course) n'est publiée qu'au départ :
- * l'adaptateur attend un JSON normalisé, servi par un petit relais (voir README, « Positions en direct »).
- * Sans relais configuré (VITE_LIVE_URL), les concurrents restent simulés.
+ * Positions officielles en direct : le relais api/official lit la cartographie de la course
+ * (src/net/official.ts) et sert le dernier pointage dans ce format. Relais injoignable : les concurrents
+ * restent simulés.
  */
 export interface LivePos {
   /** id de la flotte, ou nom du skipper / du bateau tel que publié */
@@ -16,6 +17,12 @@ export interface LivePos {
   sog?: number;
   /** horodatage de la position (ms UTC) */
   ts: number;
+  boat?: string;
+  /** RAC en course, ARV arrivé ; autre chose (abandon, non-partant…) : hors course */
+  status?: string;
+  rank?: number;
+  /** distance à l'arrivée (milles) */
+  dtf?: number;
 }
 
 export interface LiveFeed {
@@ -45,7 +52,7 @@ export function matchFleet(who: string): string | null {
   return null;
 }
 
-export const LIVE_URL: string | undefined = import.meta.env?.VITE_LIVE_URL || undefined;
+export const LIVE_URL: string = import.meta.env?.VITE_LIVE_URL || '/api/official';
 
 export async function fetchLive(url = LIVE_URL): Promise<LiveFeed | null> {
   if (!url) return null;
@@ -60,22 +67,45 @@ export async function fetchLive(url = LIVE_URL): Promise<LiveFeed | null> {
 }
 
 /**
- * Recale les concurrents sur leur position officielle. Entre deux pointages, la simulation les fait
- * avancer avec le vent réel. Ne sert qu'en temps réel, quand l'horloge de course suit la vraie heure.
- * Retourne le nombre de bateaux recalés.
+ * Recale les concurrents sur leur position officielle, avancée jusqu'à `now` à leur cap et à leur vitesse
+ * (2 h au plus). Entre deux pointages, la simulation les fait avancer avec le vent réel. Un pointage complet
+ * fait aussi la liste : hors course (abandon, non-partant) on quitte la flotte, un engagé absent la rejoint.
+ * Ne sert qu'en temps réel, quand l'horloge de course suit la vraie heure. Retourne le nombre de bateaux recalés.
  */
-export function applyLive(race: Race, feed: LiveFeed): number {
+export function applyLive(race: Race, feed: LiveFeed, now = Date.now()): number {
+  const fleet = race.def.fleet ?? [];
+  const seen = new Set<string>();
   let n = 0;
   for (const p of feed.positions) {
     const id = matchFleet(p.who);
-    if (!id) continue;
-    const b = race.boats.find((x) => x.fleetId === id);
-    if (!b || b.finished !== null) continue;
-    b.pos = [p.lon, p.lat];
-    if (p.cog !== undefined) b.hdg = ((p.cog % 360) + 360) % 360;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const status = p.status ?? 'RAC';
+    let b = race.boats.find((x) => x.fleetId === id);
+    if (status !== 'RAC' && status !== 'ARV') {
+      if (b) race.removeBoat(b);
+      continue;
+    }
+    if (!b) {
+      const f = fleet.find((x) => x.id === id);
+      if (!f) continue;
+      b = race.addFleetBoat(f);
+    }
+    if (b.finished !== null) continue;
+    const late = Math.max(0, Math.min(2, (now - p.ts) / 3_600_000));
+    const pos = p.cog !== undefined && p.sog !== undefined && status === 'RAC' ? move(p.lon, p.lat, p.cog, p.sog, late) : ([p.lon, p.lat] as [number, number]);
+    // un saut : la trace simulée jusque-là ne veut plus rien dire
+    if (dist(b.pos, pos) > 5) b.trail = [];
+    b.pos = pos;
+    if (p.cog !== undefined) b.hdg = norm360(p.cog);
     if (p.sog !== undefined) b.spd = p.sog;
     b.decide = 0;
+    if (status === 'ARV') b.finished = race.t;
     n++;
+  }
+  // pointage complet : ceux qui n'y figurent pas ne sont pas en course
+  if (seen.size >= fleet.length / 2) {
+    for (const b of race.boats.filter((x) => x.fleetId && !seen.has(x.fleetId))) race.removeBoat(b);
   }
   return n;
 }

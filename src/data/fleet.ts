@@ -65,14 +65,13 @@ export const IMOCA_RHUM_2026: FleetEntry[] = [
   E('beaudart', 'Davy Beaudart', 'Bureau Vallée', 'FRA', 'foil', 0.7, '#C6D82F', true),
   E('boissieres', 'Arnaud Boissières', 'APRIL Marine', 'FRA', 'foil', 0.66, '#00A88F', true),
   E('attwell', 'Pierre-Louis Attwell', 'Resilient', 'FRA', 'foil', 0.62, '#8BC34A', true),
-  E('garnier', 'Maël Garnier', 'DeVenir', 'FRA', 'dagger', 0.66, '#FF6F59', true),
+  E('sorel', 'Maxime Sorel', 'Vaincre la Mucoviscidose', 'FRA', 'foil', 0.72, '#E9483F'),
   E('marsset', 'Sébastien Marsset', 'Foussier', 'FRA', 'dagger', 0.62, '#7A3FB0'),
-  E('heer', 'Oliver Heer', 'Embrace the Challenge', 'SUI', 'dagger', 0.62, '#D52B1E'),
   E('cousin', 'Manuel Cousin', 'Coup de Pouce', 'FRA', 'dagger', 0.6, '#F28C28', true),
   E('destais', 'Nicolas d’Estais', 'Café Joyeux', 'FRA', 'dagger', 0.56, '#F7D046', true),
   E('daramy', 'Jean-Baptiste Daramy', 'ANETT-KALHYGE', 'FRA', 'dagger', 0.56, '#4FC3F7', true),
-  E('shawyer', 'Scott Shawyer', 'Canada Ocean Racing – Be Water Positive', 'CAN', 'dagger', 0.56, '#B0142B'),
-  E('marais', 'Robin Marais', 'Bateau à confirmer', 'FRA', 'dagger', 0.54, '#9AA5B1', true),
+  E('marais', 'Robin Marais', 'Respire', 'FRA', 'dagger', 0.54, '#9AA5B1', true),
+  E('rouger', 'Nicolas Rouger', 'Demain c’est loin', 'FRA', 'dagger', 0.52, '#FF1A1C'),
   E('suzuki', 'Masa Suzuki', 'Milai 22', 'JPN', 'dagger', 0.5, '#E8ECEF', true),
 ];
 

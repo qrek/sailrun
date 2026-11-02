@@ -25,6 +25,7 @@ import { enableModelDrop, preloadBoatModel } from './render/glbBoat';
 import { FrameGate, Quality, loadQuality, qualitySettings, saveQuality } from './render/quality';
 import { FleetLink, cleanName, loadFleetName, saveFleetName } from './net/fleet';
 import { supabaseFleet } from './net/supabaseFleet';
+import { applyLive, fetchLive } from './sim/live';
 
 type Screen = 'menu' | 'garage' | 'race';
 const LAYERS_KEY = 'sailgame.layers.v1';
@@ -99,6 +100,8 @@ export class Game {
   /** flotte des joueurs (Route du Rhum) : positions partagées en ligne */
   private fleet = new FleetLink(supabaseFleet());
   private fleetName = loadFleetName();
+  /** prochain recalage des pros sur les pointages officiels (secondes) */
+  private liveClock = 0;
   private stripH = 48;
   private pipDt = 0;
   private cpClock = 0;
@@ -292,6 +295,7 @@ export class Game {
     this.fcPlay = false;
     this.fcDirty = true;
     this.projClock = 0;
+    this.liveClock = 0;
     this.chart.windLayer = this.layers.wind;
     // deux modes seulement : cap fixe ou Auto
     if (race.player.lock === 'twa') race.player.lock = 'hdg';
@@ -893,6 +897,16 @@ export class Game {
     }
     // flotte des joueurs : ma position part, celles des autres arrivent (une fois par minute)
     this.fleet.step(race, this.fleetName, DEV, performance.now());
+    // les pros sur leurs positions officielles (Route du Rhum, en temps réel) : tous les joueurs voient la même course
+    this.liveClock -= dt;
+    if (race.def.fleet && race.speed === 'live' && this.liveClock <= 0) {
+      this.liveClock = 300;
+      void fetchLive().then((feed) => {
+        if (!feed || this.race !== race) return;
+        applyLive(race, feed);
+        this.chart.updateBoats();
+      });
+    }
     const pre = race.realT(wall);
     this.hud?.setPrestart(pre < 0 && !DEV ? -pre * 3600000 : null);
     if (p.finished !== null && !this.finishShown) {
