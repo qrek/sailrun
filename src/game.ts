@@ -23,6 +23,8 @@ import { bearing, dist } from './sim/geo';
 import { fmtDist } from './ui/units';
 import { enableModelDrop, preloadBoatModel } from './render/glbBoat';
 import { FrameGate, Quality, loadQuality, qualitySettings, saveQuality } from './render/quality';
+import { FleetLink, cleanName, loadFleetName, saveFleetName } from './net/fleet';
+import { supabaseFleet } from './net/supabaseFleet';
 
 type Screen = 'menu' | 'garage' | 'race';
 const LAYERS_KEY = 'sailgame.layers.v1';
@@ -94,6 +96,9 @@ export class Game {
   private pipFps = 15;
   /** jamais plus d'images par seconde que la qualité graphique n'en demande */
   private gate = new FrameGate(60);
+  /** flotte des joueurs (Route du Rhum) : positions partagées en ligne */
+  private fleet = new FleetLink(supabaseFleet());
+  private fleetName = loadFleetName();
   private stripH = 48;
   private pipDt = 0;
   private cpClock = 0;
@@ -280,6 +285,7 @@ export class Game {
     this.world.setLabelsVisible(false);
     this.chart.setVisible(true);
     this.chart.setBoats(race.boats);
+    this.chart.setOthers(race.others);
     this.chart.setFinish(race.def.finish, `ARRIVÉE · ${race.def.to.toUpperCase()}`);
     this.chart.setMarks(race.def.marks ?? [], race.player.mark);
     this.fcOffset = 0;
@@ -385,6 +391,10 @@ export class Game {
         this.fcPlay = false;
         this.fcDirty = true;
       },
+      fleetName: (name) => {
+        this.fleetName = cleanName(name);
+        saveFleetName(this.fleetName);
+      },
       quality: (q) => {
         saveQuality(q);
         this.applyQuality(q);
@@ -466,6 +476,10 @@ export class Game {
       }
     };
     this.hud.setDev(DEV);
+    // flotte des joueurs : sur la Route du Rhum, on choisit son nom pour apparaître chez les autres
+    const fleet = this.fleet.enabled && !!race.def.fleet;
+    this.hud.setFleet(fleet, this.fleetName);
+    if (fleet && !this.fleetName) this.hud.say(null, 'Direction de course : d’autres joueurs sont en course. Choisis ton nom dans Options pour apparaître dans leur flotte.', 'sys');
     this.syncControls();
     this.hud.update(race, this.day);
     this.mode = 'barre';
@@ -877,6 +891,8 @@ export class Game {
         if (target > race.t) race.step(Math.min(target - race.t, 24 * 30), (e) => this.onRaceEvent(e));
       }
     }
+    // flotte des joueurs : ma position part, celles des autres arrivent (une fois par minute)
+    this.fleet.step(race, this.fleetName, DEV, performance.now());
     const pre = race.realT(wall);
     this.hud?.setPrestart(pre < 0 && !DEV ? -pre * 3600000 : null);
     if (p.finished !== null && !this.finishShown) {
@@ -926,6 +942,7 @@ export class Game {
     if (this.uiClock <= 0) {
       this.uiClock = 0.25;
       this.hud?.update(race, this.day);
+      this.chart.setOthers(race.others);
       this.chart.updateBoats();
       this.updatePick(windT);
       this.syncRing();
@@ -953,7 +970,7 @@ export class Game {
       // soleil : angle horaire à la position du bateau, ramené au cap
       const hours = ((race.originUTC + race.t * 3600000) / 3600000) % 24;
       const hourAngle = (hours + p.pos[0] / 15 - 12) * 15;
-      this.immersive.frame(dt, p, race.boats, this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180);
+      this.immersive.frame(dt, p, this.allBoats(race), this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180);
     } else {
       this.chart.frame({ wind: race.wind, windT, focus: p.pos }, dt);
       if (this.cpSel >= 0 && this.mode === 'route') this.updateBubble();
@@ -967,11 +984,16 @@ export class Game {
         if (rc) {
           const hours = ((race.originUTC + race.t * 3600000) / 3600000) % 24;
           const hourAngle = (hours + p.pos[0] / 15 - 12) * 15;
-          this.immersive.frame(this.pipDt, p, race.boats, this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180, { x: rc.left, y: rc.top, w: rc.width, h: rc.height });
+          this.immersive.frame(this.pipDt, p, this.allBoats(race), this.day, ((180 + hourAngle - p.hdg) * Math.PI) / 180, { x: rc.left, y: rc.top, w: rc.width, h: rc.height });
         }
         this.pipDt = 0;
       }
     }
+  }
+
+  /** Les bateaux de la course, plus ceux des autres joueurs. */
+  private allBoats(race: Race): Boat[] {
+    return race.others.length ? [...race.boats, ...race.others] : race.boats;
   }
 
   /** La projection suit les checkpoints comme le pilote de la course. */

@@ -159,6 +159,8 @@ export interface Boat {
   fleetId?: string;
   /** positionné par le suivi en direct : la simulation ne le déplace pas */
   live?: boolean;
+  /** bateau d'un autre joueur : heures de course de sa dernière position connue */
+  remote?: number;
   /** checkpoints posés par le joueur : le pilote file vers le premier, puis le suivant */
   checkpoints?: LonLat[];
 }

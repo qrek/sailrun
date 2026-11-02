@@ -43,6 +43,8 @@ export interface HudHandlers {
   units(u: DistUnit): void;
   /** qualité graphique (enregistrée) */
   quality(q: Quality): void;
+  /** nom dans la flotte des joueurs (vide : on ne se montre pas) */
+  fleetName(name: string): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
   /** Barre (on navigue) ou Route (on pose ses points sur la carte) */
@@ -256,6 +258,8 @@ export class Hud {
         <div class="set-row"><span>Qualité 3D</span><div class="seg mini" role="group" aria-label="Qualité graphique : moins elle est haute, moins l’ordinateur chauffe">
           ${(['haute', 'moyenne', 'eco'] as Quality[]).map((k) => `<button type="button" data-quality="${k}" aria-pressed="${loadQuality() === k}">${k === 'eco' ? 'Éco' : k === 'haute' ? 'Haute' : 'Moyenne'}</button>`).join('')}
         </div></div>
+        <label class="set-row" data-fleet-row hidden><span>Ton nom</span><input type="text" data-fleet-name maxlength="24" placeholder="Nom de skipper" autocomplete="nickname" spellcheck="false" aria-describedby="fleet-hint" /></label>
+        <p class="set-hint" id="fleet-hint" data-fleet-hint hidden>Sur la Route du Rhum, les autres joueurs voient ton bateau sous ce nom. Laisse vide pour naviguer incognito.</p>
         <div class="set-row"><span>Vent sur la carte</span><div class="seg mini" role="group" aria-label="Vent sur la carte">
           <button type="button" data-layer="wind" aria-pressed="${layers.wind}">Traits</button>
         </div></div>
@@ -486,6 +490,11 @@ export class Hud {
         this.h.quality(k);
       }),
     );
+    const fleetName = q<HTMLInputElement>(r, '[data-fleet-name]');
+    fleetName.addEventListener('change', () => this.h.fleetName(fleetName.value));
+    fleetName.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') fleetName.blur();
+    });
     // barre d'outils et panneaux
     r.querySelectorAll<HTMLButtonElement>('[data-open]').forEach((b) => b.addEventListener('click', () => this.toggle(b.dataset.open!)));
     r.querySelectorAll<HTMLButtonElement>('[data-close]').forEach((b) => b.addEventListener('click', () => this.toggle(null)));
@@ -781,6 +790,13 @@ export class Hud {
   }
 
   /** Fenêtre 3D ouverte ou réduite ; rectangle à l'écran pour le rendu. */
+  /** Flotte des joueurs disponible : champ du nom dans les options. */
+  setFleet(enabled: boolean, name: string) {
+    q(this.root, '[data-fleet-row]').hidden = !enabled;
+    q(this.root, '[data-fleet-hint]').hidden = !enabled;
+    q<HTMLInputElement>(this.root, '[data-fleet-name]').value = name;
+  }
+
   setPip(open: boolean) {
     q(this.root, '[data-pip]').classList.toggle('open', open);
   }
@@ -905,10 +921,20 @@ export class Hud {
     order.forEach((b, i) => {
       const li = document.createElement('li');
       if (b.isPlayer) li.className = 'me';
-      const status = b.finished !== null ? 'arrivé' : b.repair > 0 ? 'répare' : b.avarie ? 'avarie' : b.sleep > 0 ? 'dort' : b.sailTo !== null ? 'change de voile' : b.penalty > 0 ? 'manœuvre' : b.spd < 4 ? 'à la peine' : '';
+      else if (b.remote !== undefined) li.className = 'mate';
+      // un autre joueur : on ne connaît que sa dernière position
+      const seen = b.remote !== undefined ? race.t - b.remote : 0;
+      const status =
+        b.finished !== null ? 'arrivé'
+        : b.remote !== undefined ? (seen > 0.5 ? `vu il y a ${fmtDuration(seen)}` : 'en ligne')
+        : b.repair > 0 ? 'répare' : b.avarie ? 'avarie' : b.sleep > 0 ? 'dort' : b.sailTo !== null ? 'change de voile' : b.penalty > 0 ? 'manœuvre' : b.spd < 4 ? 'à la peine' : '';
       const gap = i === 0 ? '—' : b.finished !== null ? fmtDuration(b.finished - (order[0].finished ?? 0)) : `+${fmtDist(race.remaining(b) - leadRem, true)}`;
       const fe = b.fleetId ? IMOCA_RHUM_2026.find((f) => f.id === b.fleetId) : undefined;
-      const who = fe ? `<span class="n"><b><span class="fl" aria-hidden="true">${FLAG[fe.nat] ?? ''}</span>${esc(fe.skipper)}</b><small>${esc(fe.boat)}</small></span>` : `<span class="n"><b>${esc(b.isPlayer ? 'Toi' : b.name)}</b>${b.isPlayer ? '<small>Sail Run · FRA 1</small>' : ''}</span>`;
+      const who = fe
+        ? `<span class="n"><b><span class="fl" aria-hidden="true">${FLAG[fe.nat] ?? ''}</span>${esc(fe.skipper)}</b><small>${esc(fe.boat)}</small></span>`
+        : b.remote !== undefined
+          ? `<span class="n"><b>${esc(b.name)}</b><small>joueur</small></span>`
+          : `<span class="n"><b>${esc(b.isPlayer ? 'Toi' : b.name)}</b>${b.isPlayer ? '<small>Sail Run · FRA 1</small>' : ''}</span>`;
       li.innerHTML = `<span class="p num">${i + 1}</span><span class="bar-c" style="background: ${b.color}"></span>${who}<span class="s">${status}</span><span class="g">${gap}</span>`;
       board.appendChild(li);
     });

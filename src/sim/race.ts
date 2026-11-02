@@ -105,6 +105,8 @@ export class Race {
   t = 0;
   boats: Boat[];
   player: Boat;
+  /** bateaux des autres joueurs (flotte en ligne) : classés avec les autres, ni simulés ni sauvegardés */
+  others: Boat[] = [];
   setup: Setup;
   /** identifiant dans TIME_SCALES (mode test seulement : en jeu, tout est en temps réel) */
   speed = 'live';
@@ -287,7 +289,7 @@ export class Race {
   }
 
   standings(): Boat[] {
-    return this.boats.slice().sort((a, b) => {
+    return [...this.boats, ...this.others].sort((a, b) => {
       if (a.finished !== null && b.finished !== null) return a.finished - b.finished;
       if (a.finished !== null) return -1;
       if (b.finished !== null) return 1;

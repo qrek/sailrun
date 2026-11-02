@@ -270,15 +270,15 @@ export class ChartView {
         'icon-rotation-alignment': 'map',
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
-        // clé basse = placée en premier : l'étiquette du joueur passe toujours
-        'symbol-sort-key': ['case', ['get', 'me'], 0, 1],
+        // clé basse = placée en premier : l'étiquette du joueur passe toujours, puis celles des autres joueurs
+        'symbol-sort-key': ['case', ['get', 'me'], 0, ['get', 'remote'], 0.5, 1],
         'text-field': ['get', 'label'],
         'text-font': ['Noto Sans Bold'],
         'text-size': ['case', ['get', 'me'], 13, 10.5],
         'text-offset': [0, 1.5],
         'text-optional': true,
       },
-      paint: { 'icon-color': ['get', 'color'], 'icon-halo-color': '#ffffff', 'icon-halo-width': 1.6, 'text-color': ['case', ['get', 'me'], '#ffffff', '#e6f2fa'], 'text-halo-color': 'rgba(8,36,66,0.85)', 'text-halo-width': 1.6 },
+      paint: { 'icon-color': ['get', 'color'], 'icon-halo-color': '#ffffff', 'icon-halo-width': 1.6, 'text-color': ['case', ['get', 'me'], '#ffffff', ['get', 'remote'], '#3fe3c9', '#e6f2fa'], 'text-halo-color': 'rgba(8,36,66,0.85)', 'text-halo-width': 1.6 },
     });
     this.ready = true;
     for (const f of this.onReady) f();
@@ -307,6 +307,12 @@ export class ChartView {
   }
 
   /* ---------- objets de course ---------- */
+  /** bateaux des autres joueurs (flotte en ligne), dessinés avec ceux de la course */
+  private others: Boat[] = [];
+  setOthers(boats: Boat[]) {
+    this.others = boats;
+  }
+
   setBoats(boats: Boat[]) {
     this.boats = boats;
     this.tracksAt = 0;
@@ -322,8 +328,8 @@ export class ChartView {
     const now = performance.now();
     const withTracks = now - this.tracksAt > 5000;
     if (withTracks) this.tracksAt = now;
-    for (const b of this.boats) {
-      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, label: b.isPlayer ? `TOI · ${sailLabel(b)}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
+    for (const b of [...this.boats, ...this.others]) {
+      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, remote: b.remote !== undefined, label: b.isPlayer ? `TOI · ${sailLabel(b)}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
       const tr = !withTracks ? [] : b.isPlayer ? b.trail : b.trail.slice(-120);
       if (tr.length) tracks.push({ type: 'Feature', properties: { color: b.isPlayer ? '#ffffff' : b.color, me: b.isPlayer }, geometry: { type: 'LineString', coordinates: [...tr.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]] } });
     }
