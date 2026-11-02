@@ -1723,3 +1723,17 @@ button:focus-visible, input:focus-visible { outline-color: var(--accent); }
 .mx-cta small { font-size: 13px; font-weight: 600; opacity: 0.75; padding-left: 10px; border-left: 1px solid currentColor; }
 .mx-cta small sup, .mx-cta.done sup { font-size: 0.7em; }
 .mx-cta.done { background: var(--hud-2); color: var(--text); box-shadow: none; }
+
+/* fiche d'un concurrent (toucher son bateau ou sa ligne au classement) */
+.boatcard { width: 256px; border-color: rgba(255, 216, 77, 0.55); z-index: 3; }
+.bc-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25); }
+.bc-who { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.15; }
+.bc-who b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-who small { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bc-rank { display: flex; align-items: baseline; gap: 10px; padding: 2px 0 4px; border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.bc-rank b { font-family: var(--f-display); font-style: italic; font-weight: 800; font-size: 30px; line-height: 1; }
+.bc-rank span { font-size: 13px; font-weight: 600; color: var(--route); }
+.board li[data-id]:not(.me) { cursor: pointer; }
+.board li[data-id]:not(.me):hover { background: rgba(255, 255, 255, 0.05); }
+.board li.sel { box-shadow: inset 3px 0 0 var(--route); background: rgba(255, 216, 77, 0.08); }
+.bc-rank b sup { font-size: 0.45em; vertical-align: 0.9em; margin-left: 1px; }

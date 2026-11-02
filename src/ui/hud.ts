@@ -47,6 +47,8 @@ export interface HudHandlers {
   fleetName(name: string): void;
   /** notifications : activer (geste du joueur) ou couper */
   notify(on: boolean): void;
+  /** fiche d'un concurrent (null : fermer) ; depuis le classement, on centre aussi la carte dessus */
+  boat(id: string | null, center?: boolean): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
   /** Barre (on navigue) ou Route (on pose ses points sur la carte) */
@@ -280,6 +282,15 @@ export class Hud {
       </div>
       <div class="toast" data-toast style="opacity: 0" aria-live="polite"></div>
       <div class="pick" data-pick hidden></div>
+      <div class="card probe boatcard" data-bc hidden>
+        <div class="pr-head"><i class="bc-dot" data-bc-dot></i><span class="bc-who"><b data-bc-name></b><small data-bc-sub></small></span><button type="button" class="x" data-bc-close aria-label="Fermer la fiche">${ICON_CLOSE}</button></div>
+        <div class="bc-rank"><b class="num" data-bc-rank></b><span data-bc-gap></span></div>
+        <div class="pr-row"><span class="k">Vitesse</span><b data-bc-spd></b></div>
+        <div class="pr-row"><span class="k">Cap · angle au vent</span><b data-bc-hdg></b></div>
+        <div class="pr-row"><span class="k">Voile</span><b data-bc-sail></b></div>
+        <div class="pr-row"><span class="k">Depuis toi</span><b data-bc-from></b></div>
+        <span class="pr-time" data-bc-state></span>
+      </div>
       <div class="card probe" data-probe hidden>
         <div class="pr-head"><span class="eyebrow">Sonde</span><span class="pr-pos" data-pr-pos></span><button type="button" class="x" data-pr-close aria-label="Retirer la sonde">${ICON_CLOSE}</button></div>
         <div class="pr-row"><span class="k">Vent</span><b data-pr-wind></b></div>
@@ -400,6 +411,14 @@ export class Hud {
 
   private bind() {
     const r = this.root;
+    // classement : toucher une ligne ouvre la fiche du bateau et centre la carte dessus
+    q(r, '[data-board]').addEventListener('click', (e) => {
+      const li = (e.target as HTMLElement).closest<HTMLElement>('li[data-id]');
+      if (!li || li.classList.contains('me')) return;
+      this.toggle(null); // le panneau se ferme : la fiche s'ouvre sur la carte, à côté du bateau
+      this.h.boat(li.dataset.id!, true);
+    });
+    q(r, '[data-bc-close]').addEventListener('click', () => this.h.boat(null));
     // cadran du pilote : on attrape la couronne et on tourne, puis OK juste en dessous
     const dial = q(r, '[data-pdial]');
     let dialOn = false;
@@ -870,6 +889,48 @@ export class Hud {
     el.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
   }
 
+  private boatSel: string | null = null;
+
+  /** Fiche d'un concurrent, accrochée à son bateau sur la carte. */
+  showBoat(x: number, y: number, race: Race, b: Boat | null) {
+    const el = q(this.root, '[data-bc]');
+    this.boatSel = b?.id ?? null;
+    if (!b) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    const p = race.player;
+    const set = (k: string, v: string) => {
+      const n = q(el, `[data-bc-${k}]`);
+      if (n.textContent !== v) n.textContent = v;
+    };
+    const fe = b.fleetId ? IMOCA_RHUM_2026.find((f) => f.id === b.fleetId) : undefined;
+    q(el, '[data-bc-dot]').style.background = b.color;
+    set('name', fe ? `${FLAG[fe.nat] ?? ''} ${fe.skipper}`.trim() : b.name);
+    const seen = b.remote !== undefined ? race.t - b.remote : 0;
+    set('sub', fe ? fe.boat : b.remote !== undefined ? (seen > 0.5 ? `Joueur · vu il y a ${fmtDuration(seen)}` : 'Joueur · en ligne') : 'Concurrent');
+    const order = race.standings();
+    const rank = order.indexOf(b) + 1;
+    const rk = q(el, '[data-bc-rank]');
+    const rh = `${rank}<sup>${rank === 1 ? 'er' : 'e'}</sup>`;
+    if (rk.innerHTML !== rh) rk.innerHTML = rh;
+    const d = race.remaining(p) - race.remaining(b);
+    set('gap', b.finished !== null ? `arrivé en ${fmtDuration(b.finished)}` : Math.abs(d) < 0.3 ? 'à ta hauteur' : `${fmtDist(Math.abs(d), true)} ${d > 0 ? 'devant toi' : 'derrière toi'}`);
+    set('spd', `${kn(b.spd)} nds`);
+    set('hdg', `${String(Math.round(((b.hdg % 360) + 360) % 360)).padStart(3, '0')}° · ${Math.round(Math.abs(b.twa))}° ${b.twa >= 0 ? 'tribord' : 'bâbord'}`);
+    const sail = SAILS.find((s) => s.id === b.sail)?.name ?? b.sail;
+    set('sail', b.sailTo !== null ? `${sail} → ${SAILS.find((s) => s.id === b.sailTo)?.name ?? b.sailTo}` : sail);
+    set('from', `${fmtDist(dist(p.pos, b.pos), true)} au ${String(Math.round(bearing(p.pos, b.pos))).padStart(3, '0')}°`);
+    set('state', b.finished !== null ? 'Arrivé' : b.repair > 0 ? 'Répare une avarie' : b.avarie ? 'Avarie à bord' : b.sleep > 0 ? 'Le skipper dort' : b.penalty > 0 ? 'En manœuvre' : b.remote !== undefined ? 'Position extrapolée depuis son dernier envoi' : 'En course');
+    const W = window.innerWidth;
+    const w = el.offsetWidth || 240;
+    const h = el.offsetHeight || 190;
+    const left = x > W / 2 || x + 26 + w > W - 8 ? Math.max(8, x - 26 - w) : x + 26;
+    const top = Math.max(8, Math.min(window.innerHeight - h - 8, y - h / 2));
+    el.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  }
+
   /** Infobulle du vent sous le pointeur. */
   showPick(x: number, y: number, text: string | null) {
     const el = q(this.root, '[data-pick]');
@@ -886,13 +947,14 @@ export class Hud {
     const el = q(this.root, '[data-toast]');
     el.textContent = text;
     el.style.opacity = '1';
-    this.toastT = 3.2;
+    // horloge réelle : le message part au bout de 3 s même si les images ralentissent
+    this.toastT = performance.now() + 3200;
   }
 
-  tick(dt: number) {
-    if (this.toastT > 0) {
-      this.toastT -= dt;
-      if (this.toastT <= 0) q(this.root, '[data-toast]').style.opacity = '0';
+  tick(_dt: number) {
+    if (this.toastT > 0 && performance.now() >= this.toastT) {
+      this.toastT = 0;
+      q(this.root, '[data-toast]').style.opacity = '0';
     }
   }
 
@@ -945,8 +1007,10 @@ export class Hud {
     const leadRem = race.remaining(order[0]);
     order.forEach((b, i) => {
       const li = document.createElement('li');
+      li.dataset.id = b.id;
       if (b.isPlayer) li.className = 'me';
       else if (b.remote !== undefined) li.className = 'mate';
+      if (b.id === this.boatSel) li.classList.add('sel');
       // un autre joueur : on ne connaît que sa dernière position
       const seen = b.remote !== undefined ? race.t - b.remote : 0;
       const status =

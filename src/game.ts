@@ -65,6 +65,8 @@ export class Game {
   private garageUI: GarageUI | null = null;
   private paused = false;
   private finishShown = false;
+  /** concurrent dont la fiche est ouverte */
+  private selBoat: string | null = null;
   private menuWind = new SyntheticWind(30);
   private menuT = 0;
   private clock = 0;
@@ -118,8 +120,12 @@ export class Game {
     this.chart = new ChartView(app);
     this.applyQuality(loadQuality());
     this.chart.setUnit(distUnit());
-    this.chart.on('click', (ll) => {
+    this.chart.on('click', (ll, x, y) => {
       if (!ll || this.screen !== 'race' || this.immersiveOn) return;
+      // toucher un concurrent : sa fiche ; toucher ailleurs avec une fiche ouverte : on la ferme d'abord
+      const id = this.chart.pickBoat(x, y);
+      if (id) return this.selectBoat(id);
+      if (this.selBoat) return this.selectBoat(null);
       if (this.mode === 'route') {
         // une bulle ouverte se ferme d'abord ; sinon chaque toucher pose un point
         if (this.cpSel >= 0) {
@@ -358,6 +364,8 @@ export class Game {
     if (race.player.auto && !race.player.checkpoints?.length) race.player.auto = false;
     this.cpSel = -1;
     this.insertAfter = null;
+    this.selBoat = null;
+    this.chart.setSelected(null);
     this.chart.onCpMove = (i, ll) => {
       const cps = race.player.checkpoints;
       if (!cps?.[i]) return;
@@ -452,6 +460,7 @@ export class Game {
         this.fcDirty = true;
       },
       notify: (on) => void this.setNotify(on),
+      boat: (id, center) => this.selectBoat(id, center),
       fleetName: (name) => {
         this.fleetName = cleanName(name);
         saveFleetName(this.fleetName);
@@ -850,6 +859,10 @@ export class Game {
     if (this.screen !== 'race' || !this.race) return;
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'Escape' && this.selBoat) {
+      this.selectBoat(null);
+      return;
+    }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       this.hud?.nudge(e.key === 'ArrowLeft' ? (e.shiftKey ? -10 : -2) : e.shiftKey ? 10 : 2);
       e.preventDefault();
@@ -1022,6 +1035,7 @@ export class Game {
     if (this.probe) {
       this.updateProbe(windT);
     }
+    if (this.selBoat) this.updateBoatCard();
     if (this.fcDirty) {
       this.fcDirty = false;
       this.updateForecastUI(race);
@@ -1142,7 +1156,34 @@ export class Game {
     });
   }
 
+  /** Fiche d'un concurrent : son bateau entouré, sa trace complète, ses chiffres. */
+  private selectBoat(id: string | null, center = false) {
+    this.selBoat = id;
+    this.chart.setSelected(id);
+    if (id) this.setProbe(null);
+    const b = id ? this.findBoat(id) : null;
+    if (b && center) this.chart.recenter(b.pos);
+    this.updateBoatCard();
+  }
+
+  private findBoat(id: string): Boat | null {
+    const race = this.race;
+    return race ? ([...race.boats, ...race.others].find((b) => b.id === id) ?? null) : null;
+  }
+
+  private updateBoatCard() {
+    const race = this.race;
+    const b = this.selBoat ? this.findBoat(this.selBoat) : null;
+    const sp = b && !this.immersiveOn ? this.chart.screenOfLL(b.pos) : null;
+    if (!race || !b || !sp) {
+      if (this.selBoat && !b) this.selBoat = null;
+      return this.hud?.showBoat(0, 0, race!, null);
+    }
+    this.hud?.showBoat(sp[0], sp[1], race, b);
+  }
+
   private setProbe(ll: LonLat | null) {
+    if (ll && this.selBoat) this.selectBoat(null);
     this.probe = ll;
     this.probeMarine = undefined;
     this.chart.setProbe(ll);
