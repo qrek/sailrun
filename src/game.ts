@@ -8,7 +8,7 @@ import { ChartView } from './render/chart';
 import { distUnit } from './ui/units';
 import { Boat, CP_RADIUS, MAX_CP, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, targetSail, wakeUp } from './sim/boat';
 import { LonLat, isLand, norm180, norm360, smooth } from './sim/geo';
-import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
+import { Race, RaceEvent, clearRace, isOfficial, loadEntry, loadRace, loadTraining, saveRace, timeScaleOf } from './sim/race';
 
 import { sunElevation } from './sim/sun';
 import { SyntheticWind, windFrom } from './sim/wind';
@@ -211,10 +211,15 @@ export class Game {
   }
 
   private renderMenuUI() {
-    renderMenu(this.ui, loadRace(), {
-      pick: (def) => this.showGarage(def),
-      resume: () => this.resume(),
+    renderMenu(this.ui, loadTraining(), loadEntry, {
+      pick: (def) => (this.hasEntry(def) ? this.resume(def.id) : this.showGarage(def)),
+      resume: (id) => this.resume(id),
     });
+  }
+
+  /** Course officielle déjà courue ou en cours dans ce navigateur : une seule participation. */
+  private hasEntry(def: RaceDef): boolean {
+    return isOfficial(def) && !DEV && !!loadEntry(def.id);
   }
 
   showGarage(def: RaceDef) {
@@ -233,7 +238,13 @@ export class Game {
       void loadWindGrid().then(() => this.startRace(def, setup, true));
       return;
     }
-    clearRace();
+    if (this.hasEntry(def)) {
+      // une seule participation par course officielle : on reprend celle qui existe
+      this.resume(def.id);
+      this.hud?.toast('Une seule participation par course : voici la tienne');
+      return;
+    }
+    if (!isOfficial(def)) clearRace();
     this.race = new Race(def, setup);
     // course déjà partie (on arrive en retard) : les concurrents ont avancé, toi tu pars de la ligne maintenant
     const late = this.race.realT();
@@ -261,11 +272,11 @@ export class Game {
     this.hud?.toast('Règle ton cap, ou pose des checkpoints.');
   }
 
-  private resume(waited = false) {
-    const saved = loadRace();
+  private resume(raceId?: string, waited = false) {
+    const saved = loadRace(raceId);
     if (!saved) return this.showMenu();
     if (raceById(saved.raceId).realWind && !windGrid() && !waited) {
-      void loadWindGrid().then(() => this.resume(true));
+      void loadWindGrid().then(() => this.resume(raceId, true));
       return;
     }
     this.race = Race.restore(saved);
@@ -950,7 +961,9 @@ export class Game {
     this.hud?.setPrestart(pre < 0 && !DEV ? -pre * 3600000 : null);
     if (p.finished !== null && !this.finishShown) {
       this.finishShown = true;
-      clearRace();
+      // course officielle : la participation reste, marquée arrivée ; entraînement : on libère la place
+      if (isOfficial(race.def)) saveRace(race);
+      else clearRace();
       showFinish(
         this.ui,
         race,
