@@ -11,12 +11,21 @@ import type { FleetApi, FleetRow } from './fleet';
 export const SUPABASE_URL: string = import.meta.env?.VITE_SUPABASE_URL || 'https://njuxerstcizipzxpvemq.supabase.co';
 export const SUPABASE_KEY: string = import.meta.env?.VITE_SUPABASE_KEY || 'sb_publishable_gdTGcoYthTNKcfcszXNFIw_hkYDKdQU';
 
-export function supabaseFleet(url = SUPABASE_URL, key = SUPABASE_KEY): FleetApi {
-  let client: Promise<SupabaseClient> | null = null;
-  const get = () =>
-    (client ??= import('@supabase/supabase-js').then(({ createClient }) =>
+const clients = new Map<string, Promise<SupabaseClient>>();
+/** Un seul client par projet (la flotte et les notifications partagent la même session anonyme). */
+export function supabaseClient(url = SUPABASE_URL, key = SUPABASE_KEY): Promise<SupabaseClient> {
+  let c = clients.get(url + key);
+  if (!c) {
+    c = import('@supabase/supabase-js').then(({ createClient }) =>
       createClient(url, key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'sailgame.fleet.auth' } }),
-    ));
+    );
+    clients.set(url + key, c);
+  }
+  return c;
+}
+
+export function supabaseFleet(url = SUPABASE_URL, key = SUPABASE_KEY): FleetApi {
+  const get = () => supabaseClient(url, key);
   return {
     async publish(row: FleetRow) {
       const sb = await get();

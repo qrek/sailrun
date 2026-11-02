@@ -241,7 +241,7 @@ export class ChartView {
     // relief 3D seulement à la demande (bouton Relief 3D) : c'est la partie la plus lourde de la carte
     m.addImage('boat', boatIcon(), { sdf: true });
     const src = (id: string) => m.addSource(id, { type: 'geojson', data: EMPTY });
-    for (const id of ['tracks', 'route', 'cplegs', 'rpath', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
+    for (const id of ['tracks', 'seltrack', 'route', 'cplegs', 'rpath', 'proj', 'projpts', 'marks', 'finish', 'boats', 'ghost']) src(id);
     m.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#ffd84d', 'line-width': 1.6, 'line-opacity': 0.75, 'line-dasharray': [2, 2] } });
     // tracé voulu (droit d'un point à l'autre), fin et discret
     m.addLayer({ id: 'cplegs', type: 'line', source: 'cplegs', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 1.2, 'line-opacity': 0.55, 'line-dasharray': [2, 2] } });
@@ -250,6 +250,8 @@ export class ChartView {
     m.addLayer({ id: 'rpath', type: 'line', source: 'rpath', filter: ['!=', ['get', 'k'], 'up'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['match', ['get', 'k'], 'foc', '#22D3EE', 'code0', '#A78BFA', 'spi', '#FB7185', '#ffd84d'], 'line-width': 4 } });
     m.addLayer({ id: 'rpath-up', type: 'line', source: 'rpath', filter: ['==', ['get', 'k'], 'up'], layout: { 'line-cap': 'butt', 'line-join': 'round' }, paint: { 'line-color': '#ff5d6c', 'line-width': 4, 'line-dasharray': [1.2, 1] } });
     m.addLayer({ id: 'tracks', type: 'line', source: 'tracks', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'me'], 3, 1.6], 'line-opacity': ['case', ['get', 'me'], 0.95, 0.7] } });
+    // trace complète du bateau sélectionné, par-dessus les autres
+    m.addLayer({ id: 'seltrack', type: 'line', source: 'seltrack', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 3.2, 'line-opacity': 0.95 } });
     m.addLayer({ id: 'proj', type: 'line', source: 'proj', paint: { 'line-color': '#ffffff', 'line-width': 1.6, 'line-dasharray': [1, 1.5], 'line-opacity': 0.9 } });
     m.addLayer({ id: 'projpts', type: 'circle', source: 'projpts', paint: { 'circle-radius': 3.5, 'circle-color': '#ffffff', 'circle-stroke-color': '#0c2c48', 'circle-stroke-width': 1.5 } });
     m.addLayer({ id: 'projlbl', type: 'symbol', source: 'projpts', layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, -1.1], 'text-allow-overlap': true }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#0c2c48', 'text-halo-width': 1.5 } });
@@ -258,6 +260,7 @@ export class ChartView {
     m.addLayer({ id: 'marks', type: 'circle', source: 'marks', paint: { 'circle-radius': 6, 'circle-color': ['case', ['get', 'next'], '#3fe3c9', '#ff8a3d'], 'circle-stroke-color': '#06111a', 'circle-stroke-width': 2, 'circle-opacity': ['case', ['get', 'done'], 0.3, 1] } });
     m.addLayer({ id: 'markslbl', type: 'symbol', source: 'marks', layout: { 'text-field': ['get', 'name'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'text-offset': [0, 1.3], 'text-letter-spacing': 0.08, 'text-allow-overlap': true }, paint: { 'text-color': ['case', ['get', 'next'], '#3fe3c9', '#ffb37a'], 'text-halo-color': '#06111a', 'text-halo-width': 1.5 } });
     m.addLayer({ id: 'ghost', type: 'circle', source: 'ghost', paint: { 'circle-radius': 10, 'circle-color': 'rgba(255,255,255,0.3)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2.5 } });
+    m.addLayer({ id: 'sel-halo', type: 'circle', source: 'boats', filter: ['==', ['get', 'sel'], true], paint: { 'circle-radius': 16, 'circle-color': 'rgba(255,216,77,0.14)', 'circle-stroke-color': '#ffd84d', 'circle-stroke-width': 2.5, 'circle-pitch-alignment': 'map' } });
     m.addLayer({ id: 'me-halo', type: 'circle', source: 'boats', filter: ['==', ['get', 'me'], true], paint: { 'circle-radius': 17, 'circle-color': 'rgba(255,255,255,0.12)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2, 'circle-pitch-alignment': 'map' } });
     m.addLayer({
       id: 'boats',
@@ -271,7 +274,7 @@ export class ChartView {
         'icon-allow-overlap': true,
         'icon-ignore-placement': true,
         // clé basse = placée en premier : l'étiquette du joueur passe toujours, puis celles des autres joueurs
-        'symbol-sort-key': ['case', ['get', 'me'], 0, ['get', 'remote'], 0.5, 1],
+        'symbol-sort-key': ['case', ['get', 'me'], 0, ['get', 'sel'], 0.2, ['get', 'remote'], 0.5, 1],
         'text-field': ['get', 'label'],
         'text-font': ['Noto Sans Bold'],
         'text-size': ['case', ['get', 'me'], 13, 10.5],
@@ -329,12 +332,59 @@ export class ChartView {
     const withTracks = now - this.tracksAt > 5000;
     if (withTracks) this.tracksAt = now;
     for (const b of [...this.boats, ...this.others]) {
-      feats.push({ type: 'Feature', properties: { hdg: b.hdg, color: b.color, me: b.isPlayer, remote: b.remote !== undefined, label: b.isPlayer ? `TOI · ${sailLabel(b)}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
+      const sel = b.id === this.selected;
+      feats.push({ type: 'Feature', properties: { id: b.id, hdg: b.hdg, color: b.color, me: b.isPlayer, sel, remote: b.remote !== undefined, label: b.isPlayer ? `TOI · ${sailLabel(b)}` : b.name }, geometry: { type: 'Point', coordinates: [b.pos[0], b.pos[1]] } });
+      if (sel && withTracks) {
+        const all = [...b.trail.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]];
+        this.set('seltrack', { type: 'FeatureCollection', features: all.length > 1 ? [{ type: 'Feature', properties: { color: b.color }, geometry: { type: 'LineString', coordinates: all } }] : [] });
+      }
       const tr = !withTracks ? [] : b.isPlayer ? b.trail : b.trail.slice(-120);
       if (tr.length) tracks.push({ type: 'Feature', properties: { color: b.isPlayer ? '#ffffff' : b.color, me: b.isPlayer }, geometry: { type: 'LineString', coordinates: [...tr.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]] } });
     }
     this.set('boats', { type: 'FeatureCollection', features: feats });
     if (withTracks) this.set('tracks', { type: 'FeatureCollection', features: tracks });
+  }
+
+  /* ---------- bateau sélectionné (toucher un concurrent) ---------- */
+  private selected: string | null = null;
+
+  /** Concurrent sous le doigt ou la souris (jamais le joueur), le plus proche du point touché. */
+  pickBoat(clientX: number, clientY: number): string | null {
+    if (!this.ready || this.el.hidden) return null;
+    const r = this.el.getBoundingClientRect();
+    const x = clientX - r.left;
+    const y = clientY - r.top;
+    const R = 18;
+    let best: string | null = null;
+    let bd = Infinity;
+    for (const f of this.map.queryRenderedFeatures([[x - R, y - R], [x + R, y + R]], { layers: ['boats'] })) {
+      const p = f.properties as { id?: string; me?: boolean };
+      if (!p.id || p.me) continue;
+      const [lon, lat] = (f.geometry as unknown as { coordinates: [number, number] }).coordinates;
+      const s = this.map.project([lon, lat]);
+      const d = Math.hypot(s.x - x, s.y - y);
+      if (d < bd) {
+        bd = d;
+        best = p.id;
+      }
+    }
+    return best;
+  }
+
+  setSelected(id: string | null) {
+    if (this.selected === id) return;
+    this.selected = id;
+    this.tracksAt = 0;
+    if (!id) this.set('seltrack', { type: 'FeatureCollection', features: [] });
+    this.updateBoats();
+  }
+
+  /** Position à l'écran d'un point de la carte (null si la carte est cachée). */
+  screenOfLL(p: LonLat): [number, number] | null {
+    if (this.el.hidden) return null;
+    const s = this.map.project([p[0], p[1]]);
+    const r = this.el.getBoundingClientRect();
+    return [s.x + r.left, s.y + r.top];
   }
 
   /* ---------- checkpoints du joueur ---------- */

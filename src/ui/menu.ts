@@ -8,7 +8,21 @@ import { fmtDist } from './units';
 
 export interface MenuHandlers {
   pick(def: RaceDef): void;
-  resume(): void;
+  /** reprendre une course : celle-ci, ou la course d'entraînement en cours */
+  resume(raceId?: string): void;
+}
+
+/** Où en est le joueur dans une course sauvegardée : « J2 · 4e/26 · 5 862 km », ou son arrivée. */
+function standing(saved: SavedRace): { line: string; finished: number | null; rank: number } {
+  try {
+    const r = Race.restore(saved);
+    const rank = r.standings().indexOf(r.player) + 1;
+    const sup = `<sup>${rank === 1 ? 'er' : 'e'}</sup>`;
+    if (r.player.finished !== null) return { line: `Arrivé ${rank}${sup} en ${fmtDuration(r.player.finished)}`, finished: r.player.finished, rank };
+    return { line: `J${Math.floor(r.t / 24) + 1} · ${rank}${sup}/${r.boats.length} · ${fmtDist(r.remaining(r.player))}`, finished: null, rank };
+  } catch {
+    return { line: 'Course en cours', finished: null, rank: 0 };
+  }
 }
 
 let timer = 0;
@@ -56,22 +70,24 @@ const startLabel = (utc: number) =>
   new Date(utc).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });
 
 /** Accueil façon menu de jeu : la carte en fond, la course officielle en vedette, un carrousel de modes. */
-export function renderMenu(root: HTMLElement, saved: SavedRace | null, h: MenuHandlers) {
+export function renderMenu(root: HTMLElement, saved: SavedRace | null, entryOf: (raceId: string) => SavedRace | null, h: MenuHandlers) {
   window.clearInterval(timer);
   const featured = RACES.find((r) => r.featured) ?? RACES[0];
   const training = RACES.filter((r) => r !== featured);
 
+  // ta participation à la course officielle (une seule) : on la reprend, on ne la recommence pas
+  const entry = entryOf(featured.id);
+  const mine = entry ? standing(entry) : null;
+  const cta = !mine
+    ? `<button type="button" class="mx-cta" data-race="${featured.id}">${ICON_PLAY}<span>Préparer mon IMOCA</span></button>`
+    : mine.finished !== null
+      ? `<button type="button" class="mx-cta done" data-resume-race="${featured.id}"><span>${mine.line}</span></button>`
+      : `<button type="button" class="mx-cta" data-resume-race="${featured.id}">${ICON_PLAY}<span>Reprendre ma course</span><small>${mine.line}</small></button>`;
+
   let resume = '';
   if (saved) {
     const def = raceById(saved.raceId);
-    let line = '';
-    try {
-      const r = Race.restore(saved);
-      const rank = r.standings().indexOf(r.player) + 1;
-      line = `J${Math.floor(r.t / 24) + 1} · ${rank}<sup>${rank === 1 ? 'er' : 'e'}</sup>/${r.boats.length} · ${fmtDist(r.remaining(r.player))}`;
-    } catch {
-      line = 'Course en cours';
-    }
+    const { line } = standing(saved);
     resume = `
       <button type="button" class="mx-card resume" data-resume>
         <span class="mx-ill">${routeArt(def)}<span class="mx-badge">${ICON_PLAY} Reprendre</span></span>
@@ -80,7 +96,7 @@ export function renderMenu(root: HTMLElement, saved: SavedRace | null, h: MenuHa
   }
 
   const card = (d: RaceDef, feat = false) => `
-      <button type="button" class="mx-card${feat ? ' feat' : ''}" data-race="${d.id}">
+      <button type="button" class="mx-card${feat ? ' feat' : ''}" ${feat && entry ? `data-resume-race="${d.id}"` : `data-race="${d.id}"`}>
         <span class="mx-ill">${routeArt(d)}${feat ? '<span class="mx-badge live">Officielle</span>' : '<span class="mx-badge">Entraînement</span>'}</span>
         <span class="mx-t"><b>${esc(d.name)}</b><small>${esc(d.from)} → ${esc(d.to)} · ${fmtDist(raceDistance(d))}${feat ? '' : ` · ≈ ${fmtDuration(typicalHours(d) ?? raceDistance(d) / 14)}`}</small></span>
       </button>`;
@@ -102,7 +118,7 @@ export function renderMenu(root: HTMLElement, saved: SavedRace | null, h: MenuHa
         <div class="mx-count"><small>Départ ${esc(startLabel(featured.startUTC))}</small><b data-count>${countdown(featured.startUTC)}</b></div>
         <p class="mx-blurb">${esc(featured.blurb)}</p>
         <div class="mx-cta-row">
-          <button type="button" class="mx-cta" data-race="${featured.id}">${ICON_PLAY}<span>Préparer mon IMOCA</span></button>
+          ${cta}
           <button type="button" class="mx-ghost" data-fleet>${ICON_FLEET}<span>Les engagés</span></button>
         </div>
       </section>
@@ -135,7 +151,8 @@ export function renderMenu(root: HTMLElement, saved: SavedRace | null, h: MenuHa
       </div>
     </div>`;
 
-  root.querySelector('[data-resume]')?.addEventListener('click', () => h.resume());
+  root.querySelector('[data-resume]')?.addEventListener('click', () => h.resume(saved?.raceId));
+  root.querySelectorAll<HTMLButtonElement>('[data-resume-race]').forEach((b) => b.addEventListener('click', () => h.resume(b.dataset.resumeRace)));
   root.querySelectorAll<HTMLButtonElement>('[data-race]').forEach((b) => b.addEventListener('click', () => h.pick(raceById(b.dataset.race!))));
   const panel = root.querySelector<HTMLElement>('[data-fleet-panel]')!;
   root.querySelectorAll('[data-fleet]').forEach((b) => b.addEventListener('click', () => (panel.hidden = false)));

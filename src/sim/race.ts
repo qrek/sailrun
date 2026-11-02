@@ -1,4 +1,4 @@
-import { RaceDef, raceById } from '../data/races';
+import { RACES, RaceDef, raceById } from '../data/races';
 import { Setup, botSetup, calibrated, isLightColor, lookOf, perfOf, styleOf } from '../data/garage';
 import { FleetEntry, genPerf, shortName } from '../data/fleet';
 import { Boat, BoatEvent, CP_RADIUS, SAIL_CHANGE_HOURS, bestSail, checkpointHeading, boatSpeed, migrateBoat, startRepair, startSleep, stepBoat } from './boat';
@@ -434,17 +434,19 @@ export class Race {
 }
 
 /* ---------- sauvegarde locale ---------- */
+/**
+ * Course officielle (avec la vraie flotte, comme la Route du Rhum) : une seule participation. Sa sauvegarde a
+ * sa propre place et n'est jamais effacée par une autre course ; à l'arrivée, elle reste, marquée « arrivé ».
+ * Courses d'entraînement : une sauvegarde à la fois, qu'un nouveau départ remplace.
+ */
 const KEY = 'sailgame.race.v1';
-export function saveRace(r: Race) {
+const ENTRY = 'sailgame.entry.v1:';
+
+export const isOfficial = (def: RaceDef) => !!def.fleet;
+
+function read(key: string): SavedRace | null {
   try {
-    localStorage.setItem(KEY, JSON.stringify(r.serialize()));
-  } catch {
-    /* stockage indisponible : on continue sans sauvegarde */
-  }
-}
-export function loadRace(): SavedRace | null {
-  try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const s = JSON.parse(raw) as SavedRace;
     return s.v === 1 ? s : null;
@@ -452,6 +454,67 @@ export function loadRace(): SavedRace | null {
     return null;
   }
 }
+
+function officialId(id: string): boolean {
+  const def = RACES.find((r) => r.id === id);
+  return !!def && isOfficial(def);
+}
+
+/** Anciennes sauvegardes : une course officielle rangée avec l'entraînement passe à sa place à elle. */
+function migrate() {
+  const s = read(KEY);
+  if (!s || !officialId(s.raceId)) return;
+  const e = read(ENTRY + s.raceId);
+  try {
+    if (!e || e.savedAt < s.savedAt) localStorage.setItem(ENTRY + s.raceId, JSON.stringify(s));
+    localStorage.removeItem(KEY);
+  } catch {
+    /* rien */
+  }
+}
+
+export function saveRace(r: Race) {
+  try {
+    localStorage.setItem(isOfficial(r.def) ? ENTRY + r.def.id : KEY, JSON.stringify(r.serialize()));
+  } catch {
+    /* stockage indisponible : on continue sans sauvegarde */
+  }
+}
+
+/** Participation à une course officielle (en cours ou arrivée), s'il y en a une. */
+export function loadEntry(raceId: string): SavedRace | null {
+  migrate();
+  return read(ENTRY + raceId);
+}
+
+/** La course d'entraînement en cours. */
+export function loadTraining(): SavedRace | null {
+  migrate();
+  return read(KEY);
+}
+
+/** Course à reprendre : celle demandée, sinon la plus récente pas encore arrivée. */
+export function loadRace(raceId?: string): SavedRace | null {
+  migrate();
+  if (raceId) return officialId(raceId) ? read(ENTRY + raceId) : read(KEY);
+  const all: SavedRace[] = [];
+  const t = read(KEY);
+  if (t) all.push(t);
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(ENTRY)) {
+        const e = read(k);
+        if (e && e.boats.find((b) => b.isPlayer)?.finished == null) all.push(e);
+      }
+    }
+  } catch {
+    /* rien */
+  }
+  return all.sort((a, b) => b.savedAt - a.savedAt)[0] ?? null;
+}
+
+/** Efface la course d'entraînement. Une participation officielle ne s'efface jamais. */
 export function clearRace() {
   try {
     localStorage.removeItem(KEY);

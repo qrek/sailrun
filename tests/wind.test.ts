@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RHUM, RHUM_MARKS, raceById } from '../src/data/races';
 import { DEFAULT_SETUP } from '../src/data/garage';
-import { GRID, GridWind, gridFromOpenMeteo, loadWindGrid, setWindGrid, windGrid } from '../src/sim/gfsWind';
+import { GRID, GridWind, encodeGrid, gridFromOpenMeteo, loadWindGrid, setWindGrid, windGrid } from '../src/sim/gfsWind';
 import { Race } from '../src/sim/race';
 
 /** Réponse Open-Meteo factice : le même vent sur toute la grille, 48 h à partir du jour du départ. */
@@ -15,6 +15,11 @@ function omPoints(kn: number, from: number) {
 const uniform = (kn: number, from: number, fetched = Date.now()) => gridFromOpenMeteo(omPoints(kn, from), fetched, 'live');
 
 const DAY = 86400000;
+
+/** fetch factice : la copie du serveur (api/wind) d'un côté, Open-Meteo et le reste de l'autre. */
+function route(server: () => Response, other: (url: string) => Promise<Response>) {
+  return vi.fn(async (url: string) => (String(url).includes('api/wind') ? server() : other(String(url))));
+}
 
 /** Open-Meteo factice : respecte past_days et forecast_days, un pas toutes les 3 h depuis minuit UTC. */
 function fakeOpenMeteo(url: string) {
@@ -56,12 +61,37 @@ describe('prévisions GFS', () => {
 
   it('les prévisions se rechargent quand elles ont plus de 3 h', async () => {
     setWindGrid(uniform(10, 270, Date.now() - 4 * 3600000));
-    const fetch = vi.fn(async () => new Response(JSON.stringify(omPoints(25, 0))));
-    vi.stubGlobal('fetch', fetch);
+    const om = vi.fn(async () => new Response(JSON.stringify(omPoints(25, 0))));
+    vi.stubGlobal('fetch', route(() => new Response('', { status: 404 }), om));
     const g = await loadWindGrid();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(om).toHaveBeenCalledTimes(1);
     expect(g!.meta.fetched).toBeGreaterThan(Date.now() - 60000);
     expect(windGrid()).toBe(g);
+  });
+
+  it('la copie du serveur passe avant Open-Meteo : une requête par heure pour tout le monde', async () => {
+    const om = vi.fn(async () => new Response(JSON.stringify(omPoints(25, 0))));
+    vi.stubGlobal('fetch', route(() => new Response(encodeGrid(uniform(18, 90, Date.now() - 3600000))), om));
+    const g = await loadWindGrid();
+    expect(om).not.toHaveBeenCalled();
+    expect(g!.meta.source).toBe('server');
+    expect(new GridWind(g!, RHUM.startUTC).at(-30, 30, 0)[0]).toBeCloseTo(-18, 1);
+  });
+
+  it('copie du serveur trop vieille : Open-Meteo directement', async () => {
+    const om = vi.fn(async () => new Response(JSON.stringify(omPoints(25, 0))));
+    vi.stubGlobal('fetch', route(() => new Response(encodeGrid(uniform(18, 90, Date.now() - 12 * 3600000))), om));
+    const g = await loadWindGrid();
+    expect(om).toHaveBeenCalledTimes(1);
+    expect(g!.meta.source).toBe('live');
+  });
+
+  it('Open-Meteo refuse (429) : on garde la copie du serveur, même vieille, plutôt que l’instantané', async () => {
+    const server = uniform(18, 90, Date.now() - 12 * 3600000);
+    vi.stubGlobal('fetch', route(() => new Response(encodeGrid(server)), async () => new Response('', { status: 429 })));
+    const g = await loadWindGrid();
+    expect(g!.meta.fetched).toBe(server.meta.fetched);
+    expect(g!.meta.source).toBe('server');
   });
 
   it('tant qu’elles sont fraîches, pas de nouvelle requête', async () => {

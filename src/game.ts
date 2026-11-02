@@ -8,7 +8,7 @@ import { ChartView } from './render/chart';
 import { distUnit } from './ui/units';
 import { Boat, CP_RADIUS, MAX_CP, SAILS, SailId, bestSail, changeSail, checkpointHeading, projectBoat, startRepair, startSleep, targetSail, wakeUp } from './sim/boat';
 import { LonLat, isLand, norm180, norm360, smooth } from './sim/geo';
-import { Race, RaceEvent, clearRace, loadRace, saveRace, timeScaleOf } from './sim/race';
+import { Race, RaceEvent, clearRace, isOfficial, loadEntry, loadRace, loadTraining, saveRace, timeScaleOf } from './sim/race';
 
 import { sunElevation } from './sim/sun';
 import { SyntheticWind, windFrom } from './sim/wind';
@@ -17,6 +17,10 @@ import { Hud, LayerId, ViewMode, cardinal } from './ui/hud';
 import { renderMenu } from './ui/menu';
 import { fmtDuration, raceClock } from './ui/dom';
 import { showFinish } from './ui/overlays';
+import { showAwayCard, fmtAway } from './ui/awayCard';
+import { AwayLog, RECAP_MIN_HOURS, buildRecap, snapshot } from './sim/recap';
+import { forecastAlerts } from './sim/alerts';
+import { disableNotifications, enableNotifications, local as localAlerts, needsInstall, notifyState, registerWorker, syncPushAlerts } from './net/notify';
 import { loadWindGrid, windGrid } from './sim/gfsWind';
 import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
 import { bearing, dist } from './sim/geo';
@@ -62,6 +66,8 @@ export class Game {
   private garageUI: GarageUI | null = null;
   private paused = false;
   private finishShown = false;
+  /** concurrent dont la fiche est ouverte */
+  private selBoat: string | null = null;
   private menuWind = new SyntheticWind(30);
   private menuT = 0;
   private clock = 0;
@@ -117,8 +123,12 @@ export class Game {
     this.chart = new ChartView(app);
     this.applyQuality(loadQuality());
     this.chart.setUnit(distUnit());
-    this.chart.on('click', (ll) => {
+    this.chart.on('click', (ll, x, y) => {
       if (!ll || this.screen !== 'race' || this.immersiveOn) return;
+      // toucher un concurrent : sa fiche ; toucher ailleurs avec une fiche ouverte : on la ferme d'abord
+      const id = this.chart.pickBoat(x, y);
+      if (id) return this.selectBoat(id);
+      if (this.selBoat) return this.selectBoat(null);
       if (this.mode === 'route') {
         // une bulle ouverte se ferme d'abord ; sinon chaque toucher pose un point
         if (this.cpSel >= 0) {
@@ -139,9 +149,15 @@ export class Game {
     window.addEventListener('resize', () => this.garageUI?.layout());
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.race) saveRace(this.race);
-      else if (!document.hidden) this.refreshWind();
+      if (document.hidden && this.race) {
+        saveRace(this.race);
+        this.armAlerts();
+      } else if (!document.hidden) {
+        localAlerts.disarm();
+        this.refreshWind();
+      }
     });
+    if (notifyState() === 'on') void registerWorker();
     window.addEventListener('pagehide', () => {
       if (this.race) saveRace(this.race);
     });
@@ -204,10 +220,15 @@ export class Game {
   }
 
   private renderMenuUI() {
-    renderMenu(this.ui, loadRace(), {
-      pick: (def) => this.showGarage(def),
-      resume: () => this.resume(),
+    renderMenu(this.ui, loadTraining(), loadEntry, {
+      pick: (def) => (this.hasEntry(def) ? this.resume(def.id) : this.showGarage(def)),
+      resume: (id) => this.resume(id),
     });
+  }
+
+  /** Course officielle déjà courue ou en cours dans ce navigateur : une seule participation. */
+  private hasEntry(def: RaceDef): boolean {
+    return isOfficial(def) && !DEV && !!loadEntry(def.id);
   }
 
   showGarage(def: RaceDef) {
@@ -226,7 +247,13 @@ export class Game {
       void loadWindGrid().then(() => this.startRace(def, setup, true));
       return;
     }
-    clearRace();
+    if (this.hasEntry(def)) {
+      // une seule participation par course officielle : on reprend celle qui existe
+      this.resume(def.id);
+      this.hud?.toast('Une seule participation par course : voici la tienne');
+      return;
+    }
+    if (!isOfficial(def)) clearRace();
     this.race = new Race(def, setup);
     // course déjà partie (on arrive en retard) : les concurrents ont avancé, toi tu pars de la ligne maintenant
     const late = this.race.realT();
@@ -254,11 +281,11 @@ export class Game {
     this.hud?.toast('Règle ton cap, ou pose des checkpoints.');
   }
 
-  private resume(waited = false) {
-    const saved = loadRace();
+  private resume(raceId?: string, waited = false) {
+    const saved = loadRace(raceId);
     if (!saved) return this.showMenu();
     if (raceById(saved.raceId).realWind && !windGrid() && !waited) {
-      void loadWindGrid().then(() => this.resume(true));
+      void loadWindGrid().then(() => this.resume(raceId, true));
       return;
     }
     this.race = Race.restore(saved);
@@ -266,11 +293,50 @@ export class Game {
     // temps réel : la course a continué pendant ton absence
     const hours = Math.min(24 * 30, this.race.realT() - this.race.t);
     if (hours > 0.05 && !DEV) {
-      this.race.step(hours, (e) => this.onRaceEvent(e, true));
-      this.hud?.say(null, `Pendant ton absence : ${hours < 1 ? Math.round(hours * 60) + ' min' : hours < 48 ? hours.toFixed(1).replace('.', ',') + ' h' : Math.round(hours / 24) + ' jours'} de course.`, 'sys');
+      this.catchUp(hours);
     } else {
       this.hud?.say(null, 'Course reprise.', 'sys');
     }
+  }
+
+  /**
+   * La course a continué sans toi (jeu fermé ou onglet en veille) : on rattrape d'un coup, sans un toast
+   * par événement, et au-delà d'un quart d'heure on montre le récap de ce qui s'est passé.
+   */
+  private catchUp(hours: number) {
+    const race = this.race!;
+    if (hours < RECAP_MIN_HOURS) {
+      race.step(hours, (e) => this.onRaceEvent(e, true));
+      return;
+    }
+    const before = snapshot(race);
+    const log = new AwayLog(race);
+    race.step(hours, (e) => {
+      log.listen(e);
+      this.onRaceEvent(e, true);
+    });
+    this.hud?.say(null, `Pendant ton absence : ${fmtAway(hours)} de course.`, 'sys');
+    const offer = notifyState() === 'off' && !needsInstall();
+    showAwayCard(this.ui, buildRecap(race, before, log), offer ? () => this.setNotify(true) : undefined);
+  }
+
+  /**
+   * Le joueur s'en va : on calcule ce qui va arriver à son bateau et on confie le calendrier aux notifications
+   * (navigateur si l'onglet reste ouvert, serveur sinon).
+   */
+  private armAlerts() {
+    const race = this.race;
+    if (!race || race.player.finished !== null || (DEV && race.speed !== 'live') || notifyState() !== 'on') return;
+    const alerts = forecastAlerts(race);
+    localAlerts.arm(alerts);
+    void syncPushAlerts(race.def.id, alerts);
+  }
+
+  private async setNotify(on: boolean): Promise<boolean> {
+    const st = on ? await enableNotifications() : (await disableNotifications(this.race?.def.id), notifyState());
+    this.hud?.setNotify(st, needsInstall());
+    if (on) this.hud?.toast(st === 'on' ? 'Notifications activées' : st === 'denied' ? 'Notifications bloquées par le navigateur' : 'Notifications non activées');
+    return st === 'on';
   }
 
   private enterRace() {
@@ -302,6 +368,8 @@ export class Game {
     if (race.player.auto && !race.player.checkpoints?.length) race.player.auto = false;
     this.cpSel = -1;
     this.insertAfter = null;
+    this.selBoat = null;
+    this.chart.setSelected(null);
     this.chart.onCpMove = (i, ll) => {
       const cps = race.player.checkpoints;
       if (!cps?.[i]) return;
@@ -395,6 +463,8 @@ export class Game {
         this.fcPlay = false;
         this.fcDirty = true;
       },
+      notify: (on) => void this.setNotify(on),
+      boat: (id, center) => this.selectBoat(id, center),
       fleetName: (name) => {
         this.fleetName = cleanName(name);
         saveFleetName(this.fleetName);
@@ -483,6 +553,7 @@ export class Game {
     // flotte des joueurs : sur la Route du Rhum, on choisit son nom pour apparaître chez les autres
     const fleet = this.fleet.enabled && !!race.def.fleet;
     this.hud.setFleet(fleet, this.fleetName);
+    this.hud.setNotify(notifyState(), needsInstall());
     if (fleet && !this.fleetName) this.hud.say(null, 'Direction de course : d’autres joueurs sont en course. Choisis ton nom dans Options pour apparaître dans leur flotte.', 'sys');
     this.syncControls();
     this.hud.update(race, this.day);
@@ -792,6 +863,10 @@ export class Game {
     if (this.screen !== 'race' || !this.race) return;
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'Escape' && this.selBoat) {
+      this.selectBoat(null);
+      return;
+    }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       this.hud?.nudge(e.key === 'ArrowLeft' ? (e.shiftKey ? -10 : -2) : e.shiftKey ? 10 : 2);
       e.preventDefault();
@@ -892,7 +967,9 @@ export class Game {
       } else {
         // temps réel : la course suit l'horloge, même si l'onglet a dormi
         const target = race.realT(wall);
-        if (target > race.t) race.step(Math.min(target - race.t, 24 * 30), (e) => this.onRaceEvent(e));
+        const late = Math.min(target - race.t, 24 * 30);
+        if (late >= RECAP_MIN_HOURS) this.catchUp(late);
+        else if (late > 0) race.step(late, (e) => this.onRaceEvent(e));
       }
     }
     // flotte des joueurs : ma position part, celles des autres arrivent (une fois par minute)
@@ -911,7 +988,9 @@ export class Game {
     this.hud?.setPrestart(pre < 0 && !DEV ? -pre * 3600000 : null);
     if (p.finished !== null && !this.finishShown) {
       this.finishShown = true;
-      clearRace();
+      // course officielle : la participation reste, marquée arrivée ; entraînement : on libère la place
+      if (isOfficial(race.def)) saveRace(race);
+      else clearRace();
       showFinish(
         this.ui,
         race,
@@ -970,6 +1049,7 @@ export class Game {
     if (this.probe) {
       this.updateProbe(windT);
     }
+    if (this.selBoat) this.updateBoatCard();
     if (this.fcDirty) {
       this.fcDirty = false;
       this.updateForecastUI(race);
@@ -1090,7 +1170,34 @@ export class Game {
     });
   }
 
+  /** Fiche d'un concurrent : son bateau entouré, sa trace complète, ses chiffres. */
+  private selectBoat(id: string | null, center = false) {
+    this.selBoat = id;
+    this.chart.setSelected(id);
+    if (id) this.setProbe(null);
+    const b = id ? this.findBoat(id) : null;
+    if (b && center) this.chart.recenter(b.pos);
+    this.updateBoatCard();
+  }
+
+  private findBoat(id: string): Boat | null {
+    const race = this.race;
+    return race ? ([...race.boats, ...race.others].find((b) => b.id === id) ?? null) : null;
+  }
+
+  private updateBoatCard() {
+    const race = this.race;
+    const b = this.selBoat ? this.findBoat(this.selBoat) : null;
+    const sp = b && !this.immersiveOn ? this.chart.screenOfLL(b.pos) : null;
+    if (!race || !b || !sp) {
+      if (this.selBoat && !b) this.selBoat = null;
+      return this.hud?.showBoat(0, 0, race!, null);
+    }
+    this.hud?.showBoat(sp[0], sp[1], race, b);
+  }
+
   private setProbe(ll: LonLat | null) {
+    if (ll && this.selBoat) this.selectBoat(null);
     this.probe = ll;
     this.probeMarine = undefined;
     this.chart.setProbe(ll);
