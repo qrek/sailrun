@@ -5,7 +5,7 @@
  * lire directement (pas d'en-tête CORS) : le relais api/official les lit, met le résultat en cache et le sert au jeu.
  */
 
-import type { LiveFeed, LivePos } from '../sim/live';
+import type { LiveFeed, LivePos, OfficialTrack } from '../sim/live';
 
 const TRACKER = 'https://carto.routedurhum.com/data';
 const SEEDS = [8111253, 4544506, 13986479, 16744512];
@@ -119,6 +119,33 @@ export function buildFeed(live: TrackerLive, imoca: Map<string, ImocaEntry>): Li
   return { at: last ? Date.parse(last.date) : Date.now(), positions };
 }
 
+/**
+ * Les trajectoires des IMOCA : un point de départ puis des écarts cumulés [secondes, 1e-5 °, 1e-5 °].
+ * On garde les points depuis `since` (ms UTC), un par demi-heure au plus (comme la trace des bots), et le dernier.
+ */
+export function parseTracks(json: { tracks: { id: number | string; loc: number[][] }[] }, imoca: Map<string, ImocaEntry>, since = 0): OfficialTrack[] {
+  const out: OfficialTrack[] = [];
+  for (const t of json.tracks) {
+    const who = imoca.get(String(t.id));
+    if (!who || !t.loc?.length) continue;
+    let [ts, lat, lon] = t.loc[0];
+    const all: [number, number, number][] = [[ts, lat, lon]];
+    for (let i = 1; i < t.loc.length; i++) {
+      ts += t.loc[i][0];
+      lat += t.loc[i][1];
+      lon += t.loc[i][2];
+      all.push([ts, lat, lon]);
+    }
+    const kept = all.filter((p) => p[0] * 1000 >= since);
+    const pts: [number, number, number][] = [];
+    for (const p of kept) if (!pts.length || p[0] - pts[pts.length - 1][0] >= 1800) pts.push(p);
+    const last = kept[kept.length - 1];
+    if (last && pts[pts.length - 1] !== last) pts.push(last);
+    if (pts.length) out.push({ who: who.skipper, boat: who.boat, pts: pts.map(([s, a, o]) => [s, a / 1e5, o / 1e5]) });
+  }
+  return out;
+}
+
 async function hwx(name: string): Promise<string> {
   // le serveur de la cartographie coupe parfois la connexion : deux nouvelles tentatives
   let last: unknown;
@@ -140,4 +167,10 @@ async function hwx(name: string): Promise<string> {
 export async function fetchOfficial(): Promise<LiveFeed> {
   const [config, live] = await Promise.all([hwx('tracker_config'), hwx('tracker_live')]);
   return buildFeed(JSON.parse(live) as TrackerLive, parseImoca(config));
+}
+
+/** Les trajectoires officielles des IMOCA depuis `since` (ms UTC), côté serveur. */
+export async function fetchOfficialTracks(since: number): Promise<{ at: number; tracks: OfficialTrack[] }> {
+  const [config, tracks] = await Promise.all([hwx('tracker_config'), hwx('tracker_tracks')]);
+  return { at: Date.now(), tracks: parseTracks(JSON.parse(tracks), parseImoca(config), since) };
 }

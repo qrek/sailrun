@@ -312,6 +312,8 @@ export class ChartView {
   /* ---------- objets de course ---------- */
   /** bateaux des autres joueurs (flotte en ligne), dessinés avec ceux de la course */
   private others: Boat[] = [];
+  /** trajectoires entières des concurrents (course officielle) ; sinon leurs dernières heures seulement */
+  fullTracks = false;
   setOthers(boats: Boat[]) {
     this.others = boats;
   }
@@ -338,7 +340,7 @@ export class ChartView {
         const all = [...b.trail.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]];
         this.set('seltrack', { type: 'FeatureCollection', features: all.length > 1 ? [{ type: 'Feature', properties: { color: b.color }, geometry: { type: 'LineString', coordinates: all } }] : [] });
       }
-      const tr = !withTracks ? [] : b.isPlayer ? b.trail : b.trail.slice(-120);
+      const tr = !withTracks ? [] : b.isPlayer || this.fullTracks ? b.trail : b.trail.slice(-120);
       if (tr.length) tracks.push({ type: 'Feature', properties: { color: b.isPlayer ? '#ffffff' : b.color, me: b.isPlayer }, geometry: { type: 'LineString', coordinates: [...tr.map((p) => [p[0], p[1]]), [b.pos[0], b.pos[1]]] } });
     }
     this.set('boats', { type: 'FeatureCollection', features: feats });

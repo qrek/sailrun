@@ -4,8 +4,8 @@ import { DEFAULT_SETUP } from '../src/data/garage';
 import { IMOCA_RHUM_2026 } from '../src/data/fleet';
 import { Race } from '../src/sim/race';
 import { dist } from '../src/sim/geo';
-import { LiveFeed, applyLive, matchFleet } from '../src/sim/live';
-import { buildFeed, decodeHwx, parseImoca } from '../src/net/official';
+import { LiveFeed, applyLive, applyTracks, matchFleet } from '../src/sim/live';
+import { buildFeed, decodeHwx, parseImoca, parseTracks } from '../src/net/official';
 
 /**
  * Encodeur de test, l'inverse du format .hwx : clé xorshift, puis groupes de 8 éléments précédés d'un octet
@@ -159,5 +159,50 @@ describe('recalage des pros sur les pointages officiels', () => {
     const pos = race.player.pos.slice();
     applyLive(race, fullFeed([official({ who: 'Toi' })]));
     expect(race.player.pos).toEqual(pos);
+  });
+});
+
+describe('trajectoires officielles', () => {
+  const imoca = new Map([['24', { skipper: 'Jérémie Beyou', boat: 'Charal', nat: 'FRA', color: '#22252B' }]]);
+  const t0 = Date.UTC(2026, 10, 1, 12, 0) / 1000;
+  /** une trace au format de la cartographie : un point de départ, puis des écarts (s, 1e-5 °) */
+  const tracks = {
+    tracks: [
+      { id: 5, loc: [[t0, 4863009, -203106], [900, 100, -200]] },
+      {
+        id: 24,
+        loc: [
+          [t0 - 3600, 4863009, -203106], // avant le départ : au port
+          [3600, 13847, 15031], // départ
+          [900, -500, -10000],
+          [900, -500, -10000],
+          [900, -500, -10000],
+          [900, -500, -10000],
+        ],
+      },
+    ],
+  };
+
+  it('se lisent : départ, puis écarts cumulés ; seulement les IMOCA, depuis le départ, un point par demi-heure', () => {
+    const out = parseTracks(tracks, imoca, t0 * 1000);
+    expect(out.map((t) => t.who)).toEqual(['Jérémie Beyou']);
+    const pts = out[0].pts;
+    expect(pts[0]).toEqual([t0, 48.76856, -1.88075]);
+    // un point toutes les 30 minutes au plus, et toujours le dernier
+    expect(pts.map((p) => p[0] - t0)).toEqual([0, 1800, 3600]);
+    expect(pts[pts.length - 1]).toEqual([t0 + 3600, 48.74856, -2.28075]);
+  });
+
+  it('remplacent la trace simulée des pros', () => {
+    const race = new Race(raceById('rhum2026'), DEFAULT_SETUP);
+    const n = applyTracks(race, [{ who: 'Jérémie Beyou', boat: 'Charal', pts: [[t0, 48.7, -1.9], [t0 + 1800, 48.6, -2.3]] }]);
+    expect(n).toBe(1);
+    expect(race.boats.find((b) => b.fleetId === 'beyou')!.trail).toEqual([[-1.9, 48.7], [-2.3, 48.6]]);
+    expect(race.player.trail).toEqual([]);
+  });
+
+  it('un nom inconnu ne touche personne', () => {
+    const race = new Race(raceById('rhum2026'), DEFAULT_SETUP);
+    expect(applyTracks(race, [{ who: 'Personne', boat: '?', pts: [[t0, 48, -2]] }])).toBe(0);
   });
 });

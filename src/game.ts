@@ -29,7 +29,7 @@ import { enableModelDrop, preloadBoatModel } from './render/glbBoat';
 import { FrameGate, Quality, loadQuality, qualitySettings, saveQuality } from './render/quality';
 import { FleetLink, cleanName, loadFleetName, saveFleetName } from './net/fleet';
 import { supabaseFleet } from './net/supabaseFleet';
-import { applyLive, fetchLive } from './sim/live';
+import { applyLive, applyTracks, fetchLive, fetchTracks } from './sim/live';
 
 type Screen = 'menu' | 'garage' | 'race';
 const LAYERS_KEY = 'sailgame.layers.v1';
@@ -108,6 +108,8 @@ export class Game {
   private fleetName = loadFleetName();
   /** prochain recalage des pros sur les pointages officiels (secondes) */
   private liveClock = 0;
+  /** prochain chargement de leurs trajectoires officielles (secondes) */
+  private tracksClock = 0;
   private stripH = 48;
   private pipDt = 0;
   private cpClock = 0;
@@ -362,6 +364,8 @@ export class Game {
     this.fcDirty = true;
     this.projClock = 0;
     this.liveClock = 0;
+    this.tracksClock = 0;
+    this.chart.fullTracks = !!race.def.fleet;
     this.chart.windLayer = this.layers.wind;
     // deux modes seulement : cap fixe ou Auto
     if (race.player.lock === 'twa') race.player.lock = 'hdg';
@@ -981,6 +985,16 @@ export class Game {
       void fetchLive().then((feed) => {
         if (!feed || this.race !== race) return;
         applyLive(race, feed);
+        this.chart.updateBoats();
+      });
+    }
+    // et leurs vraies trajectoires depuis le départ, toutes les 30 min
+    this.tracksClock -= dt;
+    if (race.def.fleet && race.speed === 'live' && this.tracksClock <= 0) {
+      this.tracksClock = 1800;
+      void fetchTracks().then((tracks) => {
+        if (!tracks || this.race !== race) return;
+        applyTracks(race, tracks);
         this.chart.updateBoats();
       });
     }

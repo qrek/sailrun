@@ -30,6 +30,13 @@ export interface LiveFeed {
   positions: LivePos[];
 }
 
+/** Trajectoire officielle d'un bateau : points [secondes UTC, latitude, longitude], un par demi-heure au plus. */
+export interface OfficialTrack {
+  who: string;
+  boat: string;
+  pts: [number, number, number][];
+}
+
 const norm = (s: string) =>
   s
     .normalize('NFD')
@@ -64,6 +71,32 @@ export async function fetchLive(url = LIVE_URL): Promise<LiveFeed | null> {
   } catch {
     return null;
   }
+}
+
+/** Trajectoires officielles depuis le départ (relais, `?tracks`). */
+export async function fetchTracks(url = LIVE_URL): Promise<OfficialTrack[] | null> {
+  try {
+    const r = await fetch(`${url}${url.includes('?') ? '&' : '?'}tracks`, { cache: 'no-store' });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { tracks?: OfficialTrack[] };
+    return Array.isArray(j.tracks) ? j.tracks : null;
+  } catch {
+    return null;
+  }
+}
+
+/** La trace de chaque pro devient sa vraie trajectoire ; la simulation la prolonge jusqu'au pointage suivant. */
+export function applyTracks(race: Race, tracks: OfficialTrack[]): number {
+  let n = 0;
+  for (const t of tracks) {
+    const id = matchFleet(t.who);
+    const b = id ? race.boats.find((x) => x.fleetId === id) : undefined;
+    if (!b) continue;
+    b.trail = t.pts.map(([, lat, lon]) => [lon, lat]);
+    b.trailT = 0.5;
+    n++;
+  }
+  return n;
 }
 
 /**
