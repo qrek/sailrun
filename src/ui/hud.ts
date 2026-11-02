@@ -45,6 +45,8 @@ export interface HudHandlers {
   quality(q: Quality): void;
   /** nom dans la flotte des joueurs (vide : on ne se montre pas) */
   fleetName(name: string): void;
+  /** notifications : activer (geste du joueur) ou couper */
+  notify(on: boolean): void;
   forecastPlay(): void;
   layer(id: LayerId, on: boolean): void;
   /** Barre (on navigue) ou Route (on pose ses points sur la carte) */
@@ -260,6 +262,11 @@ export class Hud {
         </div></div>
         <label class="set-row" data-fleet-row hidden><span>Ton nom</span><input type="text" data-fleet-name maxlength="24" placeholder="Nom de skipper" autocomplete="nickname" spellcheck="false" aria-describedby="fleet-hint" /></label>
         <p class="set-hint" id="fleet-hint" data-fleet-hint hidden>Sur la Route du Rhum, les autres joueurs voient ton bateau sous ce nom. Laisse vide pour naviguer incognito.</p>
+        <div class="set-row" data-notify-row><span>Notifications</span><div class="seg mini" role="group" aria-label="Notifications quand ton bateau a besoin de toi">
+          <button type="button" data-notify="on" aria-pressed="false">Oui</button>
+          <button type="button" data-notify="off" aria-pressed="true">Non</button>
+        </div></div>
+        <p class="set-hint" data-notify-hint>Checkpoint atteint, route terminée, côte en vue, skipper épuisé : on te prévient même jeu fermé.</p>
         <div class="set-row"><span>Vent sur la carte</span><div class="seg mini" role="group" aria-label="Vent sur la carte">
           <button type="button" data-layer="wind" aria-pressed="${layers.wind}">Traits</button>
         </div></div>
@@ -490,6 +497,7 @@ export class Hud {
         this.h.quality(k);
       }),
     );
+    r.querySelectorAll<HTMLButtonElement>('[data-notify]').forEach((b) => b.addEventListener('click', () => this.h.notify(b.dataset.notify === 'on')));
     const fleetName = q<HTMLInputElement>(r, '[data-fleet-name]');
     fleetName.addEventListener('change', () => this.h.fleetName(fleetName.value));
     fleetName.addEventListener('keydown', (e) => {
@@ -791,6 +799,23 @@ export class Hud {
 
   /** Fenêtre 3D ouverte ou réduite ; rectangle à l'écran pour le rendu. */
   /** Flotte des joueurs disponible : champ du nom dans les options. */
+  /** État des notifications dans les options, avec l'explication qui va avec. */
+  setNotify(state: 'unsupported' | 'off' | 'on' | 'denied', install: boolean) {
+    const row = q(this.root, '[data-notify-row]');
+    const hint = q(this.root, '[data-notify-hint]');
+    row.hidden = state === 'unsupported' && !install;
+    row.querySelectorAll<HTMLButtonElement>('[data-notify]').forEach((b) => {
+      b.setAttribute('aria-pressed', String((b.dataset.notify === 'on') === (state === 'on')));
+      b.disabled = state === 'denied' || state === 'unsupported';
+    });
+    hint.hidden = row.hidden;
+    hint.textContent = install
+      ? 'Sur iPhone : Partager, puis « Sur l’écran d’accueil ». Ouvre Sail Run depuis l’icône et active les notifications.'
+      : state === 'denied'
+        ? 'Bloquées par le navigateur : autorise les notifications de ce site dans ses réglages.'
+        : 'Checkpoint atteint, route terminée, côte en vue, skipper épuisé : on te prévient quand tu n’es pas là.';
+  }
+
   setFleet(enabled: boolean, name: string) {
     q(this.root, '[data-fleet-row]').hidden = !enabled;
     q(this.root, '[data-fleet-hint]').hidden = !enabled;

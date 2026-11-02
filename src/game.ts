@@ -17,6 +17,10 @@ import { Hud, LayerId, ViewMode, cardinal } from './ui/hud';
 import { renderMenu } from './ui/menu';
 import { fmtDuration, raceClock } from './ui/dom';
 import { showFinish } from './ui/overlays';
+import { showAwayCard, fmtAway } from './ui/awayCard';
+import { AwayLog, RECAP_MIN_HOURS, buildRecap, snapshot } from './sim/recap';
+import { forecastAlerts } from './sim/alerts';
+import { disableNotifications, enableNotifications, local as localAlerts, needsInstall, notifyState, registerWorker, syncPushAlerts } from './net/notify';
 import { loadWindGrid, windGrid } from './sim/gfsWind';
 import { MarineSeries, fetchMarine, marineAt } from './sim/marine';
 import { bearing, dist } from './sim/geo';
@@ -136,9 +140,15 @@ export class Game {
     window.addEventListener('resize', () => this.garageUI?.layout());
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.race) saveRace(this.race);
-      else if (!document.hidden) this.refreshWind();
+      if (document.hidden && this.race) {
+        saveRace(this.race);
+        this.armAlerts();
+      } else if (!document.hidden) {
+        localAlerts.disarm();
+        this.refreshWind();
+      }
     });
+    if (notifyState() === 'on') void registerWorker();
     window.addEventListener('pagehide', () => {
       if (this.race) saveRace(this.race);
     });
@@ -263,11 +273,50 @@ export class Game {
     // temps réel : la course a continué pendant ton absence
     const hours = Math.min(24 * 30, this.race.realT() - this.race.t);
     if (hours > 0.05 && !DEV) {
-      this.race.step(hours, (e) => this.onRaceEvent(e, true));
-      this.hud?.say(null, `Pendant ton absence : ${hours < 1 ? Math.round(hours * 60) + ' min' : hours < 48 ? hours.toFixed(1).replace('.', ',') + ' h' : Math.round(hours / 24) + ' jours'} de course.`, 'sys');
+      this.catchUp(hours);
     } else {
       this.hud?.say(null, 'Course reprise.', 'sys');
     }
+  }
+
+  /**
+   * La course a continué sans toi (jeu fermé ou onglet en veille) : on rattrape d'un coup, sans un toast
+   * par événement, et au-delà d'un quart d'heure on montre le récap de ce qui s'est passé.
+   */
+  private catchUp(hours: number) {
+    const race = this.race!;
+    if (hours < RECAP_MIN_HOURS) {
+      race.step(hours, (e) => this.onRaceEvent(e, true));
+      return;
+    }
+    const before = snapshot(race);
+    const log = new AwayLog(race);
+    race.step(hours, (e) => {
+      log.listen(e);
+      this.onRaceEvent(e, true);
+    });
+    this.hud?.say(null, `Pendant ton absence : ${fmtAway(hours)} de course.`, 'sys');
+    const offer = notifyState() === 'off' && !needsInstall();
+    showAwayCard(this.ui, buildRecap(race, before, log), offer ? () => this.setNotify(true) : undefined);
+  }
+
+  /**
+   * Le joueur s'en va : on calcule ce qui va arriver à son bateau et on confie le calendrier aux notifications
+   * (navigateur si l'onglet reste ouvert, serveur sinon).
+   */
+  private armAlerts() {
+    const race = this.race;
+    if (!race || race.player.finished !== null || (DEV && race.speed !== 'live') || notifyState() !== 'on') return;
+    const alerts = forecastAlerts(race);
+    localAlerts.arm(alerts);
+    void syncPushAlerts(race.def.id, alerts);
+  }
+
+  private async setNotify(on: boolean): Promise<boolean> {
+    const st = on ? await enableNotifications() : (await disableNotifications(this.race?.def.id), notifyState());
+    this.hud?.setNotify(st, needsInstall());
+    if (on) this.hud?.toast(st === 'on' ? 'Notifications activées' : st === 'denied' ? 'Notifications bloquées par le navigateur' : 'Notifications non activées');
+    return st === 'on';
   }
 
   private enterRace() {
@@ -391,6 +440,7 @@ export class Game {
         this.fcPlay = false;
         this.fcDirty = true;
       },
+      notify: (on) => void this.setNotify(on),
       fleetName: (name) => {
         this.fleetName = cleanName(name);
         saveFleetName(this.fleetName);
@@ -479,6 +529,7 @@ export class Game {
     // flotte des joueurs : sur la Route du Rhum, on choisit son nom pour apparaître chez les autres
     const fleet = this.fleet.enabled && !!race.def.fleet;
     this.hud.setFleet(fleet, this.fleetName);
+    this.hud.setNotify(notifyState(), needsInstall());
     if (fleet && !this.fleetName) this.hud.say(null, 'Direction de course : d’autres joueurs sont en course. Choisis ton nom dans Options pour apparaître dans leur flotte.', 'sys');
     this.syncControls();
     this.hud.update(race, this.day);
@@ -888,7 +939,9 @@ export class Game {
       } else {
         // temps réel : la course suit l'horloge, même si l'onglet a dormi
         const target = race.realT(wall);
-        if (target > race.t) race.step(Math.min(target - race.t, 24 * 30), (e) => this.onRaceEvent(e));
+        const late = Math.min(target - race.t, 24 * 30);
+        if (late >= RECAP_MIN_HOURS) this.catchUp(late);
+        else if (late > 0) race.step(late, (e) => this.onRaceEvent(e));
       }
     }
     // flotte des joueurs : ma position part, celles des autres arrivent (une fois par minute)
